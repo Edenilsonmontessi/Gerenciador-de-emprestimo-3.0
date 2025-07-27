@@ -134,29 +134,27 @@ export default function Reports() {
   }, 0);
   // Calcula o total recebido igual ao Dashboard (soma todos os recibos gerados)
   const totalReceived = receipts.reduce((sum, receipt) => sum + (receipt.amount || 0), 0);
-  // Calcula o saldo a receber usando getLoanStatus igual ao Dashboard
-  const pendingAmount = loans.reduce((sum, loan) => {
-    const status = getLoanStatus(loan, receipts, loan.payments || []);
-    if (status === 'active' || status === 'defaulted') {
-      // Replicar cálculo do Dashboard
-      const recibosDoEmprestimo = receipts.filter(r => r.loanId === loan.id);
-      const totalPago = recibosDoEmprestimo.reduce((s, r) => s + (r.amount || 0), 0);
-      if (loan.paymentType === 'interest_only') {
-        const hasFull = loan.payments && loan.payments.some(p => p.type === 'full');
-        return sum + (hasFull ? 0 : loan.totalAmount - totalPago);
-      } else if (loan.paymentType === 'diario') {
-        const hasFull = loan.payments && loan.payments.some(p => p.type === 'full');
-        const totalParcelas = loan.installments || loan.numberOfInstallments || 0;
-        const valorParcela = loan.installmentAmount || 0;
-        const saldo = hasFull ? 0 : Math.max((totalParcelas * valorParcela) - totalPago, 0);
-        return sum + saldo;
-      } else {
-        const saldo = loan.totalAmount - totalPago;
-        return sum + (saldo > 0 ? saldo : 0);
+  // Calcula o saldo a receber: soma de todos os empréstimos não quitados
+  const pendingAmount = loans
+    .filter(loan => {
+      const status = getLoanStatus(loan, receipts, loan.payments || []);
+      return status !== 'completed';
+    })
+    .reduce((sum, loan) => {
+      // Soma todos os valores recebidos (recibos e pagamentos) referentes ao empréstimo
+      const totalRecebido = [
+        ...receipts.filter((r) => r.loanId === loan.id).map(r => r.amount || 0),
+        ...(loan.payments || []).filter((p) => p.loanId === loan.id).map(p => p.amount || 0)
+      ].reduce((s, v) => s + v, 0);
+
+      let totalComJuros = loan.totalAmount;
+      if ((loan.paymentType === 'diario' || loan.paymentType === 'installments') && (loan.installments && loan.installmentAmount)) {
+        totalComJuros = loan.installments * loan.installmentAmount;
       }
-    }
-    return sum;
-  }, 0);
+      const quitado = (loan.payments || []).some(p => p.type === 'full');
+      const saldo = quitado ? 0 : Math.max(totalComJuros - totalRecebido, 0);
+      return sum + saldo;
+    }, 0);
 
   // Contagem igual ao Dashboard
   const activeLoans = loans.filter(loan => loan.status === 'active' || loan.status === 'defaulted').length;

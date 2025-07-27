@@ -79,6 +79,14 @@ export default function Loans() {
     };
   });
 
+  // Contagem de ativos (não concluídos)
+  const activeCount = loansWithPayments.filter(loan => {
+    const pagamentosDoEmprestimo = payments.filter(p => p.loanId === loan.id);
+    const recibosDoEmprestimo = receipts ? receipts.filter((r) => r.loanId === loan.id) : [];
+    const status = getLoanStatus(loan, recibosDoEmprestimo, pagamentosDoEmprestimo);
+    return status !== 'completed';
+  }).length;
+
   // Filter loans by search term and status (usando getLoanStatus para garantir consistência com tela de detalhes)
   const filteredLoans = loansWithPayments.filter(loan => {
     const clientName = getClientName(loan.clientId).toLowerCase();
@@ -91,7 +99,8 @@ export default function Loans() {
       return matchesSearch;
     }
     if (filterStatus === 'active') {
-      return matchesSearch && status === 'active';
+      // Mostra todos que NÃO são concluídos (ativos + vencidos)
+      return matchesSearch && status !== 'completed';
     }
     if (filterStatus === 'completed') {
       return matchesSearch && status === 'completed';
@@ -186,7 +195,7 @@ export default function Loans() {
             onChange={(e) => setFilterStatus(e.target.value)}
           >
             <option value="all">Todos os Status</option>
-            <option value="active">Ativos</option>
+            <option value="active">Ativos ({activeCount})</option>
             <option value="completed">Concluídos</option>
             <option value="defaulted">Inadimplentes</option>
           </select>

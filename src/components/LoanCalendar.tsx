@@ -32,8 +32,16 @@ function getVencimentos(
   } else if (loan.paymentType === 'interest_only') {
     dataBase = loan.dueDate ? new Date(loan.dueDate + 'T12:00:00') : null;
     if (!dataBase) return [];
+    // Sempre gera as datas de vencimento normalmente, independente do status
+    const pagamentosDoEmprestimo = loan.payments || [];
+    const quitado = pagamentosDoEmprestimo.some(p => p.type === 'full');
     const qtd = receipts.filter(r => r.loanId === loan.id).length;
-    for (let i = 0; i < qtd + 1; i++) {
+    let limite = qtd + 1;
+    if (quitado) {
+      // Se quitado, só gera vencimentos até o último recibo (não gera o próximo)
+      limite = qtd;
+    }
+    for (let i = 0; i < limite; i++) {
       if (customDates && customDates[i + 1]) {
         datas.push(new Date(customDates[i + 1] + 'T12:00:00'));
       } else {
@@ -287,27 +295,16 @@ export default function LoanCalendar() {
                 }
 
                 // Define a cor do nome do empréstimo: verde para pagos, azul para abertos, vermelho para vencidos
-                let nomeClasse = 'font-bold ';
-                if (quitado) nomeClasse += 'text-green-600 ';
-                else if (atrasado) nomeClasse += 'text-red-600 ';
-                else nomeClasse += 'text-blue-600 ';
+                let nomeClasse = 'font-bold px-2 py-1 rounded cursor-pointer ';
+                if (quitado) nomeClasse += 'text-green-600 hover:bg-green-100 ';
+                else if (atrasado) nomeClasse += 'text-red-600 hover:bg-red-100 ';
+                else nomeClasse += 'text-blue-600 hover:bg-blue-100 ';
 
                 return (
                   <li key={loan.id + (parcelaNumero ? `-parcela${parcelaNumero}` : '')}>
                     <button
                       className={nomeClasse + 'hover:underline'}
-                      onClick={() => {
-                if (atrasado) {
-                  setEditLoan({ loan, parcelaNumero });
-                  setNewDueDate('');
-                } else if (parcelaNumero && !quitado) {
-                  // Permite editar também a próxima não paga
-                  setEditLoan({ loan, parcelaNumero });
-                  setNewDueDate('');
-                } else {
-                  navigate(`/loans/${loan.id}`);
-                }
-                      }}
+                      onClick={() => navigate(`/loans/${loan.id}`)}
                     >
                       {getClientName(loan.clientId)}
                       {loan.paymentType === 'installments' && parcelaNumero ?

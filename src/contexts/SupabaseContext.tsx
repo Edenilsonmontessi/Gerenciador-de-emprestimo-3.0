@@ -471,6 +471,7 @@ function mapLoanFromDb(db: any): Loan {
     numberOfInstallments: db.installments,
     interestAmount: db.interest_amount,
     startDate: db.start_date,
+    customDates: db.customDates || db.customdates || undefined,
   };
 }
 function mapLoanToDb(loan: Omit<Loan, 'id' | 'createdAt'>) {

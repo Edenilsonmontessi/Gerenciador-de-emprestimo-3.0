@@ -21,7 +21,7 @@ export interface Loan {
   installmentAmount: number;
   dueDate: string;
   endDate: string;
-  status: 'active' | 'completed' | 'defaulted';
+  status: 'active' | 'completed' | 'defaulted' | 'overdue';
   notes?: string;
   createdAt: string;
   payments?: Payment[];
@@ -30,6 +30,7 @@ export interface Loan {
   numberOfInstallments?: number;
   interestAmount?: number;
   startDate?: string;
+  customDates?: { [installment: number]: string };
 }
 
 export interface Payment {
@@ -50,7 +51,7 @@ export interface Receipt {
   paymentId: string;
   amount: number;
   date: string;
-  dueDate: string;
+  dueDate: string | null;
   receiptNumber: string;
   createdAt: string;
 }
@@ -59,7 +60,7 @@ export interface ReportFilter {
   startDate?: string;
   endDate?: string;
   clientId?: string;
-  status?: string;
+  status?: 'active' | 'completed' | 'defaulted' | 'overdue';
 }
 
 export interface DashboardStats {

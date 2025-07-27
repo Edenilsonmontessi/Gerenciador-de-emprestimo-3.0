@@ -15,41 +15,47 @@ export default function Dashboard() {
   // Unifica cálculo igual ao Reports: soma recibos confirmados
   const stats = useMemo(() => {
     // Sempre calcula o status atualizado de cada empréstimo
-    const statusMap = { active: 0, completed: 0, defaulted: 0 };
+    let activeLoans = 0;
+    let overdueLoans = 0;
+    let completedLoans = 0;
     loans.forEach(loan => {
-      const status = getLoanStatus(loan, receipts, loan.payments || []) as 'active' | 'completed' | 'defaulted';
-      statusMap[status]++;
+      const status = getLoanStatus(loan, receipts, loan.payments || []);
+      // Log para depuração
+      if (typeof window !== 'undefined' && window.console) {
+        window.console.log('[DEBUG Dashboard] Empréstimo:', loan.id, 'Status:', status);
+      }
+      if (status === 'active') activeLoans++;
+      else if (status === 'overdue') overdueLoans++;
+      else if (status === 'completed') completedLoans++;
     });
-    const openLoans = statusMap.active + statusMap.defaulted;
-    const completedLoans = statusMap.completed;
-    const overdueLoans = statusMap.defaulted;
+    const openLoans = activeLoans + overdueLoans;
     const totalLoaned = loans.reduce((sum, loan) => sum + (loan.amount || 0), 0);
 
-    // Total Recebido: soma todos os recibos
-    const totalReceived = receipts.reduce((sum, receipt) => sum + (receipt.amount || 0), 0);
+    // Total Recebido: soma todos os recibos e todos os pagamentos
+    const totalRecebidoRecibos = receipts.reduce((sum, receipt) => sum + (receipt.amount || 0), 0);
+    const totalRecebidoPagamentos = loans.flatMap(loan => (loan.payments || [])).reduce((sum, pagamento) => sum + (pagamento.amount || 0), 0);
+    const totalReceived = totalRecebidoRecibos + totalRecebidoPagamentos;
 
-    // Saldo a Receber: soma de todos os empréstimos ativos e atrasados (active + defaulted)
+    // Saldo a Receber: soma de todos os empréstimos não quitados
     const pendingAmount = loans
       .filter(loan => {
         const status = getLoanStatus(loan, receipts, loan.payments || []);
-        return status === 'active' || status === 'defaulted';
+        return status !== 'completed';
       })
       .reduce((sum, loan) => {
-        const recibosDoEmprestimo = receipts.filter(r => r.loanId === loan.id);
-        const totalPago = recibosDoEmprestimo.reduce((s, r) => s + (r.amount || 0), 0);
-        if (loan.paymentType === 'interest_only') {
-          const hasFull = loan.payments && loan.payments.some(p => p.type === 'full');
-          return sum + (hasFull ? 0 : loan.totalAmount - totalPago);
-        } else if (loan.paymentType === 'diario') {
-          const hasFull = loan.payments && loan.payments.some(p => p.type === 'full');
-          const totalParcelas = loan.installments || loan.numberOfInstallments || 0;
-          const valorParcela = loan.installmentAmount || 0;
-          const saldo = hasFull ? 0 : Math.max((totalParcelas * valorParcela) - totalPago, 0);
-          return sum + saldo;
-        } else {
-          const saldo = loan.totalAmount - totalPago;
-          return sum + (saldo > 0 ? saldo : 0);
+        // Soma todos os valores recebidos (recibos e pagamentos) referentes ao empréstimo
+        const totalRecebido = [
+          ...receipts.filter((r) => r.loanId === loan.id).map(r => r.amount || 0),
+          ...(loan.payments || []).filter((p) => p.loanId === loan.id).map(p => p.amount || 0)
+        ].reduce((s, v) => s + v, 0);
+
+        let totalComJuros = loan.totalAmount;
+        if ((loan.paymentType === 'diario' || loan.paymentType === 'installments') && (loan.installments && loan.installmentAmount)) {
+          totalComJuros = loan.installments * loan.installmentAmount;
         }
+        const quitado = (loan.payments || []).some(p => p.type === 'full');
+        const saldo = quitado ? 0 : Math.max(totalComJuros - totalRecebido, 0);
+        return sum + saldo;
       }, 0);
 
     return {
@@ -57,6 +63,7 @@ export default function Dashboard() {
       openLoans,
       completedLoans,
       overdueLoans,
+      activeLoans,
       totalLoaned,
       totalReceived,
       pendingAmount,
@@ -80,10 +87,11 @@ export default function Dashboard() {
         />
         <StatCard 
           title="Empréstimos Ativos" 
-          value={stats.openLoans} 
+          value={stats.activeLoans} 
           icon={<CreditCard size={24} />} 
           to="/loans"
           color="secondary"
+          secondaryText={`Atrasados: ${stats.overdueLoans}`}
         />
         <StatCard 
           title="Total Emprestado" 

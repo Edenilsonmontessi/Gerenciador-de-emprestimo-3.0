@@ -7,9 +7,10 @@ interface ReciboData {
   valorPagoHoje: number;
   parcelaAtual?: number;
   totalParcelas?: number;
-  pagoConfirmado: number;
   dataGeracao: Date;
   dataPagamento: Date; // Novo campo para data de pagamento
+  pagoConfirmado: number;
+  paymentType?: string; // Adicionado para saber a modalidade
 }
 
 export function gerarRecibo(data: ReciboData): string {
@@ -34,17 +35,18 @@ export function gerarRecibo(data: ReciboData): string {
     : '';
 
   // Monta o recibo, evitando linha em branco extra se não houver parcelasPagasInfo
-  return `RECIBO DE PAGAMENTO - Doc Nº ${docNumero}
-
+  let recibo = `RECIBO DE PAGAMENTO - Doc Nº ${docNumero}
+}
 Cliente: ${cliente}
 Vencimento: ${vencimento}
 Data de pagamento: ${format(dataPagamento, 'dd/MM/yyyy')}
-${parcelasPagasInfo ? parcelasPagasInfo + '\n' : ''}Pago confirmado: ${formatCurrency(pagoConfirmado)}
-Valor pago hoje: ${formatCurrency(valorPagoHoje)}
---------------------------
-
-Gerado em: ${format(dataGeracao, 'dd/MM/yyyy HH:mm')}
-
-ATENÇÃO:
-Os dados acima informados são apenas para simples conferência e não servem como comprovante de pagamento.`;
+`;
+  if (parcelasPagasInfo) {
+    recibo += parcelasPagasInfo + '\n';
+  }
+  if (data.paymentType !== 'diario') {
+    recibo += `Pago confirmado: ${formatCurrency(pagoConfirmado)}\n`;
+  }
+  recibo += `Valor pago hoje: ${formatCurrency(valorPagoHoje)}\n--------------------------\n\nGerado em: ${format(dataGeracao, 'dd/MM/yyyy HH:mm')}\n\nATENÇÃO:\nOs dados acima informados são apenas para simples conferência e não servem como comprovante de pagamento.`;
+  return recibo;
 }

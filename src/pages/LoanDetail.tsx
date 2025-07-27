@@ -7,6 +7,7 @@ import { Client, Loan, Payment } from '../types';
 import { format } from 'date-fns';
 import { gerarRecibo } from '../utils/reciboGenerator';
 import { getLoanStatus } from '../utils/loanStatus';
+import { getInstallmentsSummary } from '../utils/loanStatus';
 
 export default function LoanDetail() {
   // Estados para forçar exibição de quitação
@@ -21,42 +22,60 @@ function getVencimentos(
   let datas: Date[] = [];
   let totalParcelas = loan.installments || loan.numberOfInstallments || 0;
   let dataBase: Date | null = null;
+  const customDates = (loan as any).customDates || {};
   if (loan.paymentType === 'diario') {
-    // Para diário, sempre usa startDate (ou createdAt) como base
     dataBase = loan.startDate ? new Date(loan.startDate) : (loan.createdAt ? new Date(loan.createdAt) : null);
     if (!dataBase) return [];
     for (let i = 0; i < totalParcelas; i++) {
-      let d = new Date(dataBase);
-      d.setDate(d.getDate() + i);
-      datas.push(d);
+      // Se existir data customizada para a parcela (i+1), usa ela
+      if (customDates && customDates[i + 1]) {
+        datas.push(new Date(customDates[i + 1] + 'T12:00:00'));
+      } else {
+        let d = new Date(dataBase);
+        d.setDate(d.getDate() + i);
+        datas.push(d);
+      }
     }
   } else if (loan.paymentType === 'interest_only') {
-    // Para somente juros, gera uma data de vencimento para cada recibo, sempre mês a mês a partir do dueDate
-    // Corrige: cria Date com 'T12:00:00' para evitar erro de fuso horário
     dataBase = loan.dueDate ? new Date(loan.dueDate + 'T12:00:00') : null;
     if (!dataBase) return [];
+    // Se houver pagamento full, não gera mais vencimentos futuros
+    const pagamentosDoEmprestimo = loan.payments || [];
+    const quitado = pagamentosDoEmprestimo.some(p => p.type === 'full');
     const qtd = receipts.filter(r => r.loanId === loan.id).length;
-    for (let i = 0; i < qtd + 1; i++) { // +1 para mostrar o próximo vencimento
-      let d = new Date(dataBase);
-      const diaOriginal = d.getDate();
-      d.setMonth(d.getMonth() + i);
-      if (d.getDate() !== diaOriginal) {
-        d.setDate(0);
+    let limite = qtd + 1;
+    if (quitado) {
+      // Se quitado, só gera vencimentos até o último recibo (não gera o próximo)
+      limite = qtd;
+    }
+    for (let i = 0; i < limite; i++) {
+      if (customDates && customDates[i + 1]) {
+        datas.push(new Date(customDates[i + 1] + 'T12:00:00'));
+      } else {
+        let d = new Date(dataBase);
+        const diaOriginal = d.getDate();
+        d.setMonth(d.getMonth() + i);
+        if (d.getDate() !== diaOriginal) {
+          d.setDate(0);
+        }
+        datas.push(d);
       }
-      datas.push(d);
     }
   } else {
-    // Para outras modalidades, pode usar dueDate, startDate ou createdAt
     dataBase = loan.dueDate ? new Date(loan.dueDate + 'T12:00:00') : (loan.startDate ? new Date(loan.startDate) : (loan.createdAt ? new Date(loan.createdAt) : null));
     if (!dataBase) return [];
     for (let i = 0; i < totalParcelas; i++) {
-      let d = new Date(dataBase);
-      const diaOriginal = d.getDate();
-      d.setMonth(d.getMonth() + i);
-      if (d.getDate() !== diaOriginal) {
-        d.setDate(0);
+      if (customDates && customDates[i + 1]) {
+        datas.push(new Date(customDates[i + 1] + 'T12:00:00'));
+      } else {
+        let d = new Date(dataBase);
+        const diaOriginal = d.getDate();
+        d.setMonth(d.getMonth() + i);
+        if (d.getDate() !== diaOriginal) {
+          d.setDate(0);
+        }
+        datas.push(d);
       }
-      datas.push(d);
     }
   }
   return datas;
@@ -96,6 +115,14 @@ function getVencimentos(
 
         // Centraliza a lógica de status usando getLoanStatus com todos os pagamentos do sistema
         const pagamentosDoEmprestimo = payments.filter(p => p.loanId === foundLoan.id);
+        // LOG extra para debug
+        if (typeof window !== 'undefined' && window.console) {
+          window.console.log('[DEBUG LoanDetail] Chamando getLoanStatus', {
+            foundLoan,
+            receipts,
+            pagamentosDoEmprestimo
+          });
+        }
         const newStatus = getLoanStatus(foundLoan, receipts, pagamentosDoEmprestimo);
         if (newStatus !== foundLoan.status) {
           updateLoan(foundLoan.id, { status: newStatus });
@@ -205,7 +232,7 @@ function getVencimentos(
         dataPagamento: receipt.date ? new Date(receipt.date) : new Date(),
         pagoConfirmado: pagoConfirmado,
       };
-      recibo = gerarRecibo(reciboData);
+      recibo = gerarRecibo({ ...reciboData, paymentType: loan.paymentType });
     }
     const link = `https://wa.me/${telefone}?text=${encodeURIComponent(recibo)}`;
     window.open(link, '_blank', 'noopener,noreferrer');
@@ -249,7 +276,8 @@ function getVencimentos(
       totalParcelas,
       pagoConfirmado,
       dataGeracao: new Date(),
-      dataPagamento: payment.date ? new Date(payment.date) : new Date(), // Corrigido para usar a data do pagamento
+      dataPagamento: payment.date ? new Date(payment.date) : new Date(),
+      paymentType: loan.paymentType
     });
 
     const link = `https://wa.me/${telefone}?text=${encodeURIComponent(recibo)}`;
@@ -275,43 +303,24 @@ function getVencimentos(
 
   // Função para alterar a data de vencimento e reativar o empréstimo
   const handleSaveDueDate = async () => {
-    if (!loan || !newDueDate) return;
+    if (!loan || !newDueDate || !selectedInstallment) return;
     setSavingDueDate(true);
     try {
-      // 1. Identifica quantas parcelas já foram pagas (recibos)
-      const recibosPagos = receipts.filter(r => r.loanId === loan.id && r.dueDate);
-      const qtdPagas = recibosPagos.length;
-      const totalParcelas = loan.installments || loan.numberOfInstallments || 0;
-      // 2. Gera as novas datas: mantém as datas já pagas, só recalcula as próximas
-      let novasDatas: string[] = [];
-      // Datas já pagas
-      novasDatas = recibosPagos.map(r => r.dueDate.slice(0,10));
-      // Próxima data começa a partir da nova data informada
-      let dataBase = new Date(newDueDate + 'T12:00:00');
-      for (let i = 0; i < totalParcelas - qtdPagas; i++) {
-        let d = new Date(dataBase);
-        if (loan.paymentType === 'diario') {
-          d.setDate(d.getDate() + i);
-        } else {
-          const diaOriginal = d.getDate();
-          d.setMonth(d.getMonth() + i);
-          if (d.getDate() !== diaOriginal) {
-            d.setDate(0);
-          }
-        }
-        novasDatas.push(d.toISOString().slice(0,10));
+      // Atualiza apenas a data da parcela selecionada
+      const customDates = { ...(loan as any).customDates, [selectedInstallment]: newDueDate };
+      const patch: any = { customDates };
+      if (selectedInstallment === 1) {
+        patch.dueDate = newDueDate;
+        patch.status = 'active';
       }
-      // 3. Atualiza o dueDate do empréstimo para a nova data escolhida
-      const result = await updateLoan(loan.id, { dueDate: newDueDate, status: 'active' });
+      const result = await updateLoan(loan.id, patch);
       if (result) {
-        setLoan(prev => prev ? { ...prev, dueDate: newDueDate, status: 'active' } : prev);
+        setLoan(prev => prev ? { ...prev, customDates, dueDate: selectedInstallment === 1 ? newDueDate : prev.dueDate } : prev);
         setShowEditDueDate(false);
         if (refetchLoans) {
           await refetchLoans();
         }
       }
-      // 4. (Opcional) Poderia atualizar os recibos futuros para refletir as novas datas, se necessário
-      // Isso depende de como os recibos são usados no sistema
     } catch (e) {
       alert('Erro ao atualizar vencimento!');
     }
@@ -331,23 +340,23 @@ function getVencimentos(
     if (loan.paymentType === 'interest_only' && !isQuitacao) {
       paymentType = selectedInstallment === 2 ? 'full' : 'interest_only';
     }
-    // Usa a data customizada se informada, senão data atual
     const paymentDateISO = customPaymentDate ? new Date(customPaymentDate + 'T00:00:00').toISOString() : new Date().toISOString();
-    // Não altera mais o dueDate automaticamente ao registrar pagamento
     let statusForcado: 'active' | 'completed' | undefined = undefined;
-    // Se for quitação manual, força status para concluído em qualquer modalidade
     if (isQuitacao && loan.status === 'active') {
       statusForcado = 'completed';
     }
-    // Se for modalidade somente juros e pagamento for 'full', conclui o empréstimo
     if (loan.paymentType === 'interest_only' && paymentType === 'full') {
       statusForcado = 'completed';
     }
-    // Sempre usar a data de vencimento selecionada pelo usuário
-    let dueDateStr = selectedDueDate;
-    if (!dueDateStr) {
-      alert('Selecione o vencimento que está sendo pago!');
-      return;
+    // Não exige vencimento nem gera nova data para pagamento full na modalidade somente juros
+    let dueDateStr: string | null = selectedDueDate;
+    if (loan.paymentType === 'interest_only' && paymentType === 'full') {
+      dueDateStr = null;
+    } else {
+      if (!dueDateStr) {
+        alert('Selecione o vencimento que está sendo pago!');
+        return;
+      }
     }
     const paymentToSave = {
       loanId: loan.id,
@@ -367,7 +376,7 @@ function getVencimentos(
       paymentId: savedPayment.id,
       amount: savedPayment.amount,
       date: savedPayment.date,
-      dueDate: dueDateStr || loan.dueDate || new Date().toISOString().slice(0, 10),
+      dueDate: dueDateStr ?? null,
       receiptNumber: `REC-${Date.now().toString().slice(-4)}${loan.id.slice(-4)}`,
     };
     const savedReceipt = await addReceipt(receiptToSave);
@@ -381,7 +390,6 @@ function getVencimentos(
       ...updatedReceipts.filter((r) => r.loanId === loan.id).map((r) => r.amount || 0),
       ...updatedPayments.filter((p) => p.loanId === loan.id).map((p) => p.amount || 0)
     ].reduce((sum, value) => sum + value, 0);
-    // Sempre recalcula o status com base na lógica centralizada
     let newStatus = getLoanStatus(loan, updatedReceipts, updatedPayments);
     let totalPagoFinal = totalRecebido;
     if (isQuitacao) {
@@ -402,7 +410,6 @@ function getVencimentos(
       setTotalPagoForcado(null);
       setSaldoForcado(null);
     }
-    // Atualiza o status no banco para garantir consistência na listagem
     await updateLoan(loan.id, { status: newStatus });
     setLoan({
       ...loan,
@@ -416,6 +423,25 @@ function getVencimentos(
 
   if (!loan || !client) {
     return <div className="p-4 text-center">Carregando...</div>;
+  }
+  // Resumo visual das parcelas
+  // Ajuste: se houver pagamento full na modalidade somente juros, todas as parcelas são consideradas pagas
+  let resumoParcelas = getInstallmentsSummary(loan, receipts.filter(r => r.loanId === loan.id));
+  let datasPagas: string[] = resumoParcelas.datasPagas || [];
+  let datasVencidasNaoPagas: string[] = resumoParcelas.datasVencidas || [];
+  if (loan.paymentType === 'interest_only') {
+    const pagamentosDoEmprestimo = loan.payments || [];
+    const quitado = pagamentosDoEmprestimo.some(p => p.type === 'full');
+    if (quitado) {
+      // Marca todas as datas como pagas e limpa vencidas
+      const vencimentos = getVencimentos(loan, receipts.filter(r => r.loanId === loan.id));
+      datasPagas = vencimentos.map(data => {
+        let dataObj = data instanceof Date ? data : new Date(data);
+        return dataObj.toISOString().slice(0,10);
+      });
+      datasVencidasNaoPagas = [];
+      resumoParcelas = { ...resumoParcelas, pagas: datasPagas.length, vencidas: 0, emDia: 0 };
+    }
   }
   // Cálculo correto do total pago, saldo a receber e parcelas pagas
   const recibosDoEmprestimo = receipts.filter(r => loan && r.loanId === loan.id);
@@ -431,19 +457,38 @@ function getVencimentos(
   const totalComJuros = ((loan.paymentType === 'diario' || loan.paymentType === 'installments') && loan.installments && loan.installmentAmount)
     ? loan.installments * loan.installmentAmount
     : loan.totalAmount;
-  // Se foi quitação, força saldo a receber para zero
   if (quitacaoForcada && saldoForcado !== null) {
     saldoAReceber = saldoForcado;
   } else if (loan.paymentType === 'interest_only') {
-    // Só zera se houver pagamento do tipo 'full'
-    const quitado = pagamentosDoEmprestimo.some(p => p.type === 'full');
-    saldoAReceber = quitado ? 0 : totalComJuros;
+    // Saldo a receber = total do empréstimo - tudo que já foi pago (juros e quitação)
+    saldoAReceber = Math.max(totalComJuros - totalPagoConfirmado, 0);
   } else {
     saldoAReceber = Math.max(totalComJuros - totalPagoConfirmado, 0);
   }
 
   return (
     <div>
+      {/* Resumo visual das parcelas */}
+      <div className="flex gap-2 mb-4 items-center flex-wrap">
+        <span className="px-2 py-1 rounded bg-green-100 text-green-800 text-xs font-bold">
+          Pagas: {resumoParcelas.pagas}
+          {datasPagas.length > 0 && (
+            <span className="ml-2 text-xs font-normal text-green-700">{datasPagas.join(', ')}</span>
+          )}
+        </span>
+        <span className="px-2 py-1 rounded bg-red-100 text-red-800 text-xs font-bold">
+          Vencidas: {resumoParcelas.vencidas}
+          {datasVencidasNaoPagas.length > 0 && (
+            <span className="ml-2 text-xs font-normal text-red-700">{datasVencidasNaoPagas.join(', ')}</span>
+          )}
+        </span>
+        {/* Só mostra badge azul se não estiver quitado por full */}
+        {!(loan.paymentType === 'interest_only' && (loan.payments || []).some(p => p.type === 'full')) && (
+          <span className="px-2 py-1 rounded bg-blue-100 text-blue-800 text-xs font-bold">
+            Em aberto: {resumoParcelas.emDia}
+          </span>
+        )}
+      </div>
       <div className="mb-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div className="flex items-center gap-4">
           <button
@@ -674,119 +719,94 @@ function getVencimentos(
         </div>
       </div>
 
-      {/* Histórico de Recibos */}
+
+      {/* Histórico de Recibos - Cards Modernos */}
       <div className="mt-6 bg-white rounded-lg p-6 shadow-sm">
         <h2 className="text-lg font-medium mb-4">Histórico de Recibos</h2>
         {receipts && receipts.filter(r => r.loanId === loan.id).length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="min-w-full rounded-xl overflow-hidden shadow divide-y divide-gray-200">
-              <thead className="bg-indigo-50">
-                {loan.paymentType === 'interest_only' ? (
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-bold text-indigo-700 uppercase tracking-wider">Nº Recibo</th>
-                    <th className="px-6 py-3 text-left text-xs font-bold text-indigo-700 uppercase tracking-wider">Data do Pagamento</th>
-                    <th className="px-6 py-3 text-left text-xs font-bold text-indigo-700 uppercase tracking-wider">Valor Pago</th>
-                    <th className="px-6 py-3 text-left text-xs font-bold text-indigo-700 uppercase tracking-wider">Ações</th>
-                  </tr>
-                ) : (
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-bold text-indigo-700 uppercase tracking-wider">Nº Recibo</th>
-                    <th className="px-6 py-3 text-left text-xs font-bold text-indigo-700 uppercase tracking-wider">Data</th>
-                    <th className="px-6 py-3 text-left text-xs font-bold text-indigo-700 uppercase tracking-wider">Valor</th>
-                    <th className="px-6 py-3 text-left text-xs font-bold text-indigo-700 uppercase tracking-wider">Ações</th>
-                  </tr>
-                )}
-              </thead>
-              <tbody>
-                {(() => {
-                  const recibos = receipts.filter(r => r.loanId === loan.id);
-                  return recibos.map((receipt, idx) => {
-                    const rowBg = idx % 2 === 0 ? 'bg-white' : 'bg-gray-50';
-                    if (loan.paymentType === 'interest_only') {
-                      return (
-                        <tr key={receipt.id} className={`${rowBg} hover:bg-indigo-50 transition`}>
-                          <td className="px-6 py-4 whitespace-nowrap font-semibold">{receipt.receiptNumber}</td>
-                          <td className="px-6 py-4 whitespace-nowrap">{new Date(receipt.date).toLocaleDateString('pt-BR')}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-green-700 font-bold">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(receipt.amount)}</td>
-                          <td className="px-6 py-4 whitespace-nowrap flex gap-2">
-                            <button
-                              onClick={() => {
-                                const reciboData = {
-                                  docNumero: receipt.receiptNumber,
-                                  cliente: client.name,
-                                  vencimento: loan.dueDate ? format(new Date(loan.dueDate + 'T00:00:00'), 'dd/MM/yyyy') : '-',
-                                  valorPagoHoje: receipt.amount,
-                                  dataGeracao: new Date(),
-                                  dataPagamento: receipt.date ? new Date(receipt.date) : new Date(),
-                                  pagoConfirmado: 0,
-                                };
-                                const recibo = gerarRecibo(reciboData);
-                                alert(recibo);
-                              }}
-                              className="inline-flex items-center gap-1 px-3 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200 text-xs font-semibold transition"
-                              title="Ver Recibo"
-                            >
-                              <svg xmlns='http://www.w3.org/2000/svg' className='h-4 w-4' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9' /></svg>
-                              Recibo
-                            </button>
-                            <button
-                              onClick={() => handleSendReceiptWhatsAppFromReceipt(receipt)}
-                              className="inline-flex items-center gap-1 px-3 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 text-xs font-semibold transition"
-                              title="Enviar WhatsApp"
-                            >
-                              <svg xmlns='http://www.w3.org/2000/svg' className='h-4 w-4' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M16 12a4 4 0 01-8 0 4 4 0 018 0zm0 0v1a4 4 0 01-8 0v-1m8 0a4 4 0 01-8 0' /></svg>
-                              WhatsApp
-                            </button>
-                            <button
-                              onClick={() => setShowDeleteReceiptModal(receipt.id)}
-                              className="inline-flex items-center gap-1 px-3 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 text-xs font-semibold transition"
-                              title="Excluir Recibo"
-                            >
-                              <svg xmlns='http://www.w3.org/2000/svg' className='h-4 w-4' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M6 18L18 6M6 6l12 12' /></svg>
-                              Excluir
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    }
-                    // Outras modalidades
-                    return (
-                      <tr key={receipt.id} className={`${rowBg} hover:bg-indigo-50 transition`}>
-                        <td className="px-6 py-4 whitespace-nowrap">{receipt.receiptNumber}</td>
-                        <td className="px-6 py-4 whitespace-nowrap">{new Date(receipt.date).toLocaleDateString('pt-BR')}</td>
-                        <td className="px-6 py-4 whitespace-nowrap">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(receipt.amount)}</td>
-                        <td className="px-6 py-4 whitespace-nowrap flex gap-2">
-                          <button
-                            onClick={() => navigate(`/receipts/${receipt.id}`)}
-                            className="inline-flex items-center gap-1 px-3 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200 text-xs font-semibold transition"
-                            title="Ver Detalhes"
-                          >
-                            <svg xmlns='http://www.w3.org/2000/svg' className='h-4 w-4' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9' /></svg>
-                            Detalhes
-                          </button>
-                          <button
-                            onClick={() => handleSendReceiptWhatsAppFromReceipt(receipt)}
-                            className="inline-flex items-center gap-1 px-3 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 text-xs font-semibold transition"
-                            title="Enviar WhatsApp"
-                          >
-                            <svg xmlns='http://www.w3.org/2000/svg' className='h-4 w-4' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M16 12a4 4 0 01-8 0 4 4 0 018 0zm0 0v1a4 4 0 01-8 0v-1m8 0a4 4 0 01-8 0' /></svg>
-                            WhatsApp
-                          </button>
-                          <button
-                            onClick={() => setShowDeleteReceiptModal(receipt.id)}
-                            className="inline-flex items-center gap-1 px-3 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 text-xs font-semibold transition"
-                            title="Excluir Recibo"
-                          >
-                            <svg xmlns='http://www.w3.org/2000/svg' className='h-4 w-4' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M6 18L18 6M6 6l12 12' /></svg>
-                            Excluir
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  });
-                })()}
-              </tbody>
-            </table>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {receipts.filter(r => r.loanId === loan.id).map((receipt, idx) => {
+              const isInterestOnly = loan.paymentType === 'interest_only';
+              const isFullQuit = isInterestOnly && (receipt.dueDate === null || receipt.dueDate === undefined);
+              return (
+                <div key={receipt.id} className="rounded-xl border border-gray-200 shadow-sm bg-gradient-to-br from-indigo-50 to-white p-5 flex flex-col gap-3 hover:shadow-lg transition">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-indigo-100 text-indigo-600">
+                      <svg xmlns='http://www.w3.org/2000/svg' className='h-6 w-6' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9' /></svg>
+                    </span>
+                    <div>
+                      <div className="text-xs text-gray-500 font-semibold">Nº Recibo</div>
+                      <div className="text-base font-bold text-indigo-700">{receipt.receiptNumber}</div>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-500 text-xs">Data:</span>
+                      <span className="font-medium">{new Date(receipt.date).toLocaleDateString('pt-BR')}</span>
+                    </div>
+                    {isInterestOnly && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-500 text-xs">Tipo:</span>
+                        <span className="font-medium">{isFullQuit ? 'Juros + Capital' : 'Somente Juros'}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-500 text-xs">Valor:</span>
+                      <span className="font-bold text-green-700">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(receipt.amount)}</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    {isInterestOnly ? (
+                      <button
+                        onClick={() => {
+                          const reciboData = {
+                            docNumero: receipt.receiptNumber,
+                            cliente: client.name,
+                            vencimento: isFullQuit ? '-' : (loan.dueDate ? format(new Date(loan.dueDate + 'T00:00:00'), 'dd/MM/yyyy') : '-'),
+                            valorPagoHoje: receipt.amount,
+                            dataGeracao: new Date(),
+                            dataPagamento: receipt.date ? new Date(receipt.date) : new Date(),
+                            pagoConfirmado: 0,
+                          };
+                          const recibo = gerarRecibo(reciboData);
+                          alert(recibo);
+                        }}
+                        className="inline-flex items-center gap-1 px-3 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200 text-xs font-semibold transition"
+                        title="Ver Recibo"
+                      >
+                        <svg xmlns='http://www.w3.org/2000/svg' className='h-4 w-4' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9' /></svg>
+                        Recibo
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => navigate(`/receipts/${receipt.id}`)}
+                        className="inline-flex items-center gap-1 px-3 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200 text-xs font-semibold transition"
+                        title="Ver Detalhes"
+                      >
+                        <svg xmlns='http://www.w3.org/2000/svg' className='h-4 w-4' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9' /></svg>
+                        Detalhes
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleSendReceiptWhatsAppFromReceipt(receipt)}
+                      className="inline-flex items-center gap-1 px-3 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 text-xs font-semibold transition"
+                      title="Enviar WhatsApp"
+                    >
+                      <svg xmlns='http://www.w3.org/2000/svg' className='h-4 w-4' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M16 12a4 4 0 01-8 0 4 4 0 018 0zm0 0v1a4 4 0 01-8 0v-1m8 0a4 4 0 01-8 0' /></svg>
+                      WhatsApp
+                    </button>
+                    <button
+                      onClick={() => setShowDeleteReceiptModal(receipt.id)}
+                      className="inline-flex items-center gap-1 px-3 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 text-xs font-semibold transition"
+                      title="Excluir Recibo"
+                    >
+                      <svg xmlns='http://www.w3.org/2000/svg' className='h-4 w-4' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M6 18L18 6M6 6l12 12' /></svg>
+                      Excluir
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ) : (
           <p className="text-center text-gray-500">Nenhum recibo gerado</p>
@@ -814,7 +834,7 @@ function getVencimentos(
                   <option value="">Selecione...</option>
                   {(() => {
                     const vencimentos = getVencimentos(loan, receipts);
-                    const datasPagas = receipts.filter(r => r.loanId === loan.id && r.dueDate).map(r => r.dueDate.slice(0,10));
+                    const datasPagas = receipts.filter(r => r.loanId === loan.id && r.dueDate).map(r => r.dueDate ? r.dueDate.slice(0,10) : '');
                     return vencimentos.map((data) => {
                       let dataObj = data instanceof Date ? data : (typeof data === 'string' && (data as string).length === 10 ? new Date(data + 'T12:00:00') : new Date(data));
                       const dataStr = dataObj.toISOString().slice(0,10);
@@ -906,8 +926,32 @@ function getVencimentos(
                 Cancelar
               </button>
               <button
-                onClick={() => {
-                  if (showDeleteReceiptModal) deleteReceipt(showDeleteReceiptModal);
+                onClick={async () => {
+                  if (showDeleteReceiptModal) {
+                    // Busca o recibo a ser excluído
+                    const reciboExcluido = receipts.find(r => r.id === showDeleteReceiptModal);
+                    let updatedPayments = loan.payments || [];
+                    // Se for modalidade somente juros e recibo de quitação (full), remove também o pagamento full
+                    if (
+                      loan.paymentType === 'interest_only' &&
+                      reciboExcluido &&
+                      (reciboExcluido.dueDate === null || reciboExcluido.dueDate === undefined)
+                    ) {
+                      // Remove o pagamento do tipo full relacionado ao recibo
+                      updatedPayments = updatedPayments.filter(p => p.id !== reciboExcluido.paymentId);
+                      // Atualiza pagamentos no banco
+                      await updateLoan(loan.id, { payments: updatedPayments });
+                    }
+                    await deleteReceipt(showDeleteReceiptModal);
+                    // Após excluir, recalcula status do empréstimo
+                    if (loan) {
+                      // Atualiza lista de recibos local (sem o excluído)
+                      const updatedReceipts = receipts.filter(r => r.id !== showDeleteReceiptModal && r.loanId === loan.id);
+                      const novoStatus = getLoanStatus(loan, updatedReceipts, updatedPayments);
+                      await updateLoan(loan.id, { status: novoStatus, payments: updatedPayments });
+                      setLoan({ ...loan, status: novoStatus, payments: updatedPayments });
+                    }
+                  }
                   setShowDeleteReceiptModal(null);
                 }}
                 className="btn btn-danger"
@@ -925,6 +969,21 @@ function getVencimentos(
           <div className="bg-white rounded-lg max-w-md w-full p-6">
             <h3 className="text-lg font-medium mb-4">Alterar Data de Vencimento</h3>
             <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Selecione a parcela/dia</label>
+              <select
+                className="form-select w-full mb-2"
+                value={selectedInstallment}
+                onChange={e => setSelectedInstallment(Number(e.target.value))}
+              >
+                {loan && getVencimentos(loan, receipts).map((data, idx) => {
+                  const dataObj = data instanceof Date ? data : new Date(data);
+                  return (
+                    <option key={idx} value={idx + 1}>
+                      {`Parcela ${idx + 1} - ${dataObj.toLocaleDateString('pt-BR')}`}
+                    </option>
+                  );
+                })}
+              </select>
               <label className="block text-sm font-medium text-gray-700 mb-1">Nova Data de Vencimento</label>
               <input
                 type="date"

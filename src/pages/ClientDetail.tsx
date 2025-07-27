@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, CreditCard, Receipt, Pencil, Trash, AlertTriangle } from 'lucide-react';
 import { useLocalData } from '../contexts/SupabaseContext';
-import { Client, Loan, Receipt as ReceiptType } from '../types';
+import { Client, Loan, Receipt as ReceiptType, Payment } from '../types';
+import { getLoanStatus } from '../utils/loanStatus';
 
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
@@ -195,10 +196,26 @@ export default function ClientDetail() {
                   <tbody>
                     {clientLoans.map((loan, idx) => {
                       const recibosDoEmprestimo = clientReceipts.filter(r => r.loanId === loan.id);
-                      const totalPago = recibosDoEmprestimo.reduce((sum, r) => sum + (r.amount || 0), 0);
-                      const saldoAReceber = loan.paymentType === 'interest_only'
-                        ? loan.totalAmount
-                        : loan.totalAmount - totalPago;
+                      // Busca pagamentos do empréstimo se existir payments no contexto
+                      const pagamentosDoEmprestimo = (typeof window !== 'undefined' && window.payments)
+                        ? window.payments.filter((p: Payment) => p.loanId === loan.id)
+                        : (loan.payments || []);
+                      const status = getLoanStatus(loan, recibosDoEmprestimo, pagamentosDoEmprestimo);
+                      const totalPago = recibosDoEmprestimo.reduce((sum, r) => sum + (r.amount || 0), 0) + (pagamentosDoEmprestimo?.reduce((sum, p) => sum + (p.amount || 0), 0) || 0);
+                      let saldoAReceber = 0;
+                      if (loan.paymentType === 'interest_only') {
+                        const quitado = pagamentosDoEmprestimo?.some(p => p.type === 'full');
+                        saldoAReceber = quitado ? 0 : loan.totalAmount;
+                      } else if (loan.paymentType === 'diario') {
+                        const quitado = pagamentosDoEmprestimo?.some(p => p.type === 'full');
+                        saldoAReceber = quitado ? 0 : Math.max((loan.installments && loan.installmentAmount)
+                          ? loan.installments * loan.installmentAmount - totalPago
+                          : loan.totalAmount - totalPago, 0);
+                      } else {
+                        saldoAReceber = Math.max((loan.installments && loan.installmentAmount)
+                          ? loan.installments * loan.installmentAmount - totalPago
+                          : loan.totalAmount - totalPago, 0);
+                      }
                       return (
                         <tr key={loan.id} className={idx % 2 === 0 ? 'bg-white' : 'bg-indigo-50'}>
                           <td className="px-6 py-4 whitespace-nowrap text-base text-gray-900 font-medium">
@@ -211,8 +228,8 @@ export default function ClientDetail() {
                             {loan.installments}x de {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(loan.installmentAmount)}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`badge ${loan.status === 'active' ? 'badge-green' : loan.status === 'completed' ? 'badge-blue' : 'badge-red'} shadow`}>
-                              {loan.status === 'active' ? 'Ativo' : loan.status === 'completed' ? 'Concluído' : 'Inadimplente'}
+                            <span className={`badge ${status === 'active' ? 'badge-green' : status === 'completed' ? 'badge-blue' : 'badge-red'} shadow`}>
+                              {status === 'active' ? 'Ativo' : status === 'completed' ? 'Concluído' : 'Vencido'}
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-base text-gray-900 font-semibold">

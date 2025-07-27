@@ -1,3 +1,59 @@
+// Função para obter resumo das parcelas: pagas, vencidas, em dia
+import { Loan, Receipt } from '../types';
+
+export function getInstallmentsSummary(loan: Loan, receipts: Receipt[] = []) {
+  const totalParcelas = loan.installments || loan.numberOfInstallments || 0;
+  const dataBase = loan.dueDate ? new Date(loan.dueDate) : (loan.startDate ? new Date(loan.startDate) : (loan.createdAt ? new Date(loan.createdAt) : null));
+  if (!dataBase || totalParcelas === 0) return { pagas: 0, vencidas: 0, emDia: 0, datasPagas: [], datasVencidas: [] };
+  let datasVenc = [];
+  if (loan.paymentType === 'diario') {
+    for (let i = 0; i < totalParcelas; i++) {
+      let d = new Date(dataBase);
+      d.setDate(d.getDate() + i);
+      datasVenc.push(d);
+    }
+  } else {
+    for (let i = 0; i < totalParcelas; i++) {
+      let d = new Date(dataBase);
+      const diaOriginal = d.getDate();
+      d.setMonth(d.getMonth() + i);
+      if (d.getDate() !== diaOriginal) {
+        d.setDate(0);
+      }
+      datasVenc.push(d);
+    }
+  }
+  const hoje = new Date();
+  hoje.setHours(0,0,0,0);
+  let pagas = 0, vencidas = 0, emDia = 0;
+  const datasPagas: string[] = [];
+  const datasVencidas: string[] = [];
+  for (let i = 0; i < datasVenc.length; i++) {
+    const dataObj = datasVenc[i];
+    dataObj.setHours(0,0,0,0);
+    const reciboPago = receipts.find(r => {
+      if (!r.dueDate) return false;
+      const rDueDate = new Date(r.dueDate);
+      rDueDate.setHours(0,0,0,0);
+      return (
+        rDueDate.getFullYear() === dataObj.getFullYear() &&
+        rDueDate.getMonth() === dataObj.getMonth() &&
+        rDueDate.getDate() === dataObj.getDate()
+      );
+    });
+    if (reciboPago) {
+      pagas++;
+      // Usa a data do recibo pago
+      datasPagas.push(new Date(reciboPago.dueDate).toLocaleDateString('pt-BR'));
+    } else if (dataObj < hoje) {
+      vencidas++;
+      datasVencidas.push(dataObj.toLocaleDateString('pt-BR'));
+    } else {
+      emDia++;
+    }
+  }
+  return { pagas, vencidas, emDia, datasPagas, datasVencidas };
+}
 // Função utilitária para calcular status do empréstimo
 import { Loan, Receipt, Payment } from '../types';
 
@@ -42,29 +98,38 @@ export function getLoanStatus(
   // Se o total recebido for igual ou maior ao total com juros, empréstimo está concluído
   // Na modalidade 'somente juros', só conclui se houver pagamento do tipo 'full'
 
+
   // Modalidade somente juros: concluído apenas se houver pagamento tipo 'full' (juros + capital)
   if (loan.paymentType === 'interest_only') {
-    const pagamentos = payments?.filter(p => p.loanId === loan.id) || [];
-    const quitado = pagamentos.some(p => p.type === 'full');
+    const quitado = payments?.filter(p => p.loanId === loan.id).some(p => p.type === 'full');
     return quitado ? 'completed' : 'active';
   }
 
   // Modalidade parcelado e diário: concluído se todas as parcelas estiverem pagas
   if (loan.paymentType === 'installments' || loan.paymentType === 'diario') {
     const totalParcelas = loan.installments || loan.numberOfInstallments || 0;
-    const dataInicio = loan.startDate ? new Date(loan.startDate) : (loan.createdAt ? new Date(loan.createdAt) : null);
-    if (!dataInicio || totalParcelas === 0) return 'active';
-    // Gera todas as datas de vencimento
+    const recibosPagos = (receipts || []).filter(r => r.loanId === loan.id && r.amount > 0);
+    // Se o número de recibos pagos for igual ao número de parcelas, considera concluído
+    if (recibosPagos.length >= totalParcelas && totalParcelas > 0) {
+      if (typeof window !== 'undefined' && window.console) {
+        window.console.log('[DEBUG loanStatus] Todas as parcelas pagas! Empréstimo concluído (tolerante a datas).', { loanId: loan.id });
+      }
+      return 'completed';
+    }
+    // Lógica antiga (datas exatas) como fallback para mostrar overdue
+    const dataBase = loan.dueDate ? new Date(loan.dueDate) : (loan.startDate ? new Date(loan.startDate) : (loan.createdAt ? new Date(loan.createdAt) : null));
+    const customDates = (loan as any).customDates || {};
+    if (!dataBase || totalParcelas === 0) return 'active';
     let datasVenc = [];
-    if (loan.paymentType === 'diario') {
-      for (let i = 0; i < totalParcelas; i++) {
-        let d = new Date(dataInicio);
+    for (let i = 0; i < totalParcelas; i++) {
+      if (customDates && customDates[i + 1]) {
+        datasVenc.push(new Date(customDates[i + 1] + 'T12:00:00'));
+      } else if (loan.paymentType === 'diario') {
+        let d = new Date(dataBase);
         d.setDate(d.getDate() + i);
         datasVenc.push(d);
-      }
-    } else {
-      for (let i = 0; i < totalParcelas; i++) {
-        let d = new Date(dataInicio);
+      } else {
+        let d = new Date(dataBase);
         const diaOriginal = d.getDate();
         d.setMonth(d.getMonth() + i);
         if (d.getDate() !== diaOriginal) {
@@ -73,41 +138,69 @@ export function getLoanStatus(
         datasVenc.push(d);
       }
     }
-    // Verifica recibos pagos
-    const recibosPagos = receipts || [];
     let todasPagas = true;
     let vencidaSemPagamento = false;
-    const hojeStr = new Date().toISOString().slice(0,10);
+    const hoje = new Date();
+    hoje.setHours(0,0,0,0);
     for (let i = 0; i < datasVenc.length; i++) {
       const dataObj = datasVenc[i];
-      // Garante comparação só por dia, ignorando hora/fuso
-      const dataStr = dataObj.toISOString().slice(0,10);
+      dataObj.setHours(0,0,0,0);
       const pago = recibosPagos.some(r => {
         if (!r.dueDate) return false;
-        const rDueDate = new Date(r.dueDate);
-        const rDueDateStr = rDueDate.toISOString().slice(0,10);
-        return rDueDateStr === dataStr;
+        const rDate = new Date(r.dueDate);
+        rDate.setHours(0,0,0,0);
+        if (
+          rDate.getFullYear() === dataObj.getFullYear() &&
+          rDate.getMonth() === dataObj.getMonth() &&
+          rDate.getDate() === dataObj.getDate()
+        ) {
+          return true;
+        }
+        if (r.loanId === loan.id && r.amount === loan.installmentAmount) {
+          const diff = Math.abs(rDate.getTime() - dataObj.getTime());
+          if (diff <= 1000 * 60 * 60 * 24) return true;
+        }
+        return false;
       });
       if (!pago) {
         todasPagas = false;
-        // Compara datas como string YYYY-MM-DD
-        if (dataStr < hojeStr) {
+        if (dataObj < hoje) {
           vencidaSemPagamento = true;
+        }
+        if (typeof window !== 'undefined' && window.console) {
+          window.console.log('[DEBUG loanStatus] Parcela NÃO paga:', {
+            dataEsperada: dataObj,
+            datasVenc,
+            recibosPagos,
+            loanId: loan.id,
+            installmentAmount: loan.installmentAmount,
+            customDates
+          });
+        }
+      } else {
+        if (typeof window !== 'undefined' && window.console) {
+          window.console.log('[DEBUG loanStatus] Parcela paga:', {
+            dataEsperada: dataObj,
+            datasVenc,
+            recibosPagos,
+            loanId: loan.id,
+            installmentAmount: loan.installmentAmount,
+            customDates
+          });
         }
       }
     }
-    // Ajuste: se for 1 parcela e ela está paga, também é concluído
-    if (todasPagas || (totalParcelas === 1 && recibosPagos.length > 0)) return 'completed';
+    if (todasPagas) {
+      if (typeof window !== 'undefined' && window.console) {
+        window.console.log('[DEBUG loanStatus] Todas as parcelas pagas! Empréstimo concluído.', { loanId: loan.id });
+      }
+      return 'completed';
+    }
     if (vencidaSemPagamento) return 'overdue';
     return 'active';
   }
 
-  // Para as demais modalidades, considera recibos
-  const recibosDoEmprestimo = receipts.filter((r) => r.loanId === loan.id);
-  const totalRecibos = recibosDoEmprestimo.reduce((sum, r) => sum + (r.amount || 0), 0);
-  if (recibosDoEmprestimo.length > 0 && totalRecibos >= totalComJuros) {
-    return 'completed';
-  }
+  // Outras modalidades: manter lógica padrão (pode ser ajustada conforme necessidade)
   return 'active';
 
   // Para status de cada recibo, a lógica deve ser aplicada na tela de detalhes

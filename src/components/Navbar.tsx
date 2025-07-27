@@ -45,6 +45,13 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
               </Link>
             </div>
             <button
+              className="ml-2 px-3 py-2 text-sm font-medium bg-green-500 hover:bg-green-600 rounded text-white"
+              onClick={() => window.location.reload()}
+              title="Atualizar"
+            >
+              🔄 Refresh
+            </button>
+            <button
               className="ml-4 px-3 py-2 text-sm font-medium bg-red-500 hover:bg-red-600 rounded text-white"
               onClick={async () => {
                 await supabase.auth.signOut();

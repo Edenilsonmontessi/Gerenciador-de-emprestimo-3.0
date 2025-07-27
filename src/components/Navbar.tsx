@@ -1,5 +1,5 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { Menu, DollarSign } from 'lucide-react';
+import { Menu, DollarSign, RefreshCw } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface NavbarProps {
@@ -45,11 +45,12 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
               </Link>
             </div>
             <button
-              className="ml-2 px-3 py-2 text-sm font-medium bg-green-500 hover:bg-green-600 rounded text-white"
+              className="ml-2 p-2 md:px-3 md:py-2 bg-green-500 hover:bg-green-600 rounded text-white flex items-center justify-center"
               onClick={() => window.location.reload()}
               title="Atualizar"
             >
-              🔄 Refresh
+              <RefreshCw className="h-5 w-5 md:mr-2" />
+              <span className="hidden md:inline text-sm font-medium">Refresh</span>
             </button>
             <button
               className="ml-4 px-3 py-2 text-sm font-medium bg-red-500 hover:bg-red-600 rounded text-white"

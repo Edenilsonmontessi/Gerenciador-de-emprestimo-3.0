@@ -18,16 +18,19 @@ export default function ReceiptDetail() {
   useEffect(() => {
     if (id) {
       const foundReceipt = receipts.find(r => r.id === id);
+      console.log('[ReceiptDetail] id:', id);
+      console.log('[ReceiptDetail] foundReceipt:', foundReceipt);
       if (foundReceipt) {
         setReceipt(foundReceipt);
-        
         // Find client and loan
         const foundClient = clients.find(c => c.id === foundReceipt.clientId);
         const foundLoan = loans.find(l => l.id === foundReceipt.loanId);
-        
+        console.log('[ReceiptDetail] foundClient:', foundClient);
+        console.log('[ReceiptDetail] foundLoan:', foundLoan);
         if (foundClient) setClient(foundClient);
         if (foundLoan) setLoan(foundLoan);
       } else {
+        console.error('[ReceiptDetail] Recibo não encontrado para id:', id);
         navigate('/receipts');
       }
     }
@@ -79,6 +82,7 @@ export default function ReceiptDetail() {
 
   // Adicionar checagem de null antes de acessar receipt/client
   if (!receipt || !client || !loan) {
+    console.warn('[ReceiptDetail] Dados incompletos:', { receipt, client, loan });
     return <div className="p-4 text-center">Carregando...</div>;
   }
 
@@ -114,7 +118,9 @@ export default function ReceiptDetail() {
           <span className="text-xs text-gray-400 mb-4">Nº {receipt.receiptNumber} - {new Date(receipt.date).toLocaleDateString('pt-BR')}</span>
           <div className="w-full border-t border-dashed border-gray-300 my-4"></div>
           <p className="text-base leading-relaxed text-gray-700 mb-6 whitespace-pre-line">
-            Recebi(emos) de <span className="font-bold text-indigo-700">{client.name}</span>{client.cpf && (<span> (CPF: <span className="font-mono">{client.cpf}</span>)</span>)}
+            Recebi(emos) de <span className="font-bold text-indigo-700">{client.name}{client.code && (
+              <span className="ml-2 px-2 py-0.5 rounded bg-gray-200 text-xs text-gray-700 font-mono">Cód: {client.code}</span>
+            )}</span>{client.cpf && (<span> (CPF: <span className="font-mono">{client.cpf}</span>)</span>)}
             {', '}a importância de <span className="font-bold text-green-700">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(receipt.amount)}</span>
             {` (${valorPorExtenso(receipt.amount)})`}, referente ao pagamento da {loan.installments && loan.installments > 1 ? `parcela ${loan.payments?.find(p => p.id === receipt.paymentId)?.installmentNumber || '-'} de ${loan.installments}` : 'parcela única'} do empréstimo código <span className="font-mono">{loan.id.slice(-4)}</span>.
           </p>

@@ -7,12 +7,23 @@ export default function Clients() {
   const { clients, deleteClientCascade } = useLocalData();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedClients, setSelectedClients] = useState<string[]>([]);
+  const [deleteMode, setDeleteMode] = useState(false);
+  const [sortAsc, setSortAsc] = useState(true);
 
-  const filteredClients = clients.filter(client => 
+  let filteredClients = clients.filter(client => 
     client.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
     client.phone.includes(searchTerm) ||
     client.email.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  // Ordenação por nome
+  filteredClients = filteredClients.sort((a, b) => {
+    if (sortAsc) {
+      return a.name.localeCompare(b.name);
+    } else {
+      return b.name.localeCompare(a.name);
+    }
+  });
 
   // Seleção múltipla
   const toggleSelectClient = (clientId: string) => {
@@ -36,6 +47,7 @@ export default function Clients() {
       }
       alert('Clientes apagados com sucesso!');
       setSelectedClients([]);
+      setDeleteMode(false);
     }
   };
 
@@ -43,23 +55,22 @@ export default function Clients() {
     <div className="p-2 md:p-8 animate-fade-in min-h-[90vh] bg-gradient-to-br from-white via-indigo-50 to-purple-50">
       <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
         <h1 className="section-title drop-shadow-lg">Clientes</h1>
-        <Link 
-          to="/clients/add" 
-          className="btn btn-primary flex items-center gap-2 shadow-xl hover:scale-105 transition-transform text-lg px-6 py-3"
-        >
-          <Plus size={24} /> Novo Cliente
-        </Link>
+        <div className="flex gap-2 items-center">
+          <Link 
+            to="/clients/add" 
+            className="btn btn-primary flex items-center gap-2 shadow-xl hover:scale-105 transition-transform text-lg px-6 py-3"
+          >
+            <Plus size={24} /> Novo Cliente
+          </Link>
+          {!deleteMode && (
+            <button onClick={() => setDeleteMode(true)} className="btn btn-danger flex items-center gap-2 shadow-xl hover:scale-105 transition-transform text-lg px-6 py-3">
+              Excluir
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Botão de exclusão múltipla */}
-      {selectedClients.length > 0 && (
-        <div className="mb-4 flex gap-2 items-center animate-fade-in">
-          <button onClick={handleDeleteSelected} className="btn btn-danger shadow-md">
-            Excluir Selecionados ({selectedClients.length})
-          </button>
-          <button onClick={deselectAll} className="btn btn-secondary text-xs shadow-md">Limpar Seleção</button>
-        </div>
-      )}
+      {/* Botões de exclusão múltipla aparecem apenas no modo de exclusão, ao lado do botão Novo Cliente */}
 
       {/* Search */}
       <div className="mb-8">
@@ -78,19 +89,21 @@ export default function Clients() {
       </div>
 
       {/* Client list */}
+      <div className="mb-4 text-right text-sm text-gray-600">
+        Total de clientes: <span className="font-bold text-indigo-700">{filteredClients.length}</span>
+      </div>
       {filteredClients.length > 0 ? (
         <div className="overflow-x-auto card p-0">
           <table className="table-modern">
             <thead className="sticky top-0 z-10">
               <tr>
-                <th className="px-4 py-4 bg-gradient-to-r from-indigo-100 to-purple-100">
-                  <input
-                    type="checkbox"
-                    checked={selectedClients.length === filteredClients.length && filteredClients.length > 0}
-                    onChange={e => e.target.checked ? selectAll() : deselectAll()}
-                  />
+                <th
+                  className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider cursor-pointer select-none"
+                  onClick={() => setSortAsc(s => !s)}
+                >
+                  Nome
+                  <span className="ml-1 text-indigo-500">{sortAsc ? '▲' : '▼'}</span>
                 </th>
-                <th className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Nome</th>
                 <th className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Contato</th>
                 <th className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">CPF</th>
                 <th className="px-6 py-4 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Cidade</th>
@@ -99,16 +112,16 @@ export default function Clients() {
             </thead>
             <tbody>
               {filteredClients.map((client, idx) => (
-                <tr key={client.id} className={idx % 2 === 0 ? 'bg-white' : 'bg-indigo-50'}>
-                  <td className="px-4 py-4">
-                    <input
-                      type="checkbox"
-                      checked={selectedClients.includes(client.id)}
-                      onChange={() => toggleSelectClient(client.id)}
-                    />
-                  </td>
+                <tr key={client.id} className={idx % 2 === 0 ? 'bg-white' : 'bg-indigo-50'} style={{ transition: 'background 0.2s' }}
+                  onMouseEnter={e => e.currentTarget.style.background = '#e0e7ff'}
+                  onMouseLeave={e => e.currentTarget.style.background = idx % 2 === 0 ? '#fff' : '#eef2ff'}>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="font-bold text-indigo-700 text-lg group-hover:text-indigo-900 transition-colors">{client.name}</div>
+                    <div className="flex items-center font-bold text-indigo-700 text-lg group-hover:text-indigo-900 transition-colors">
+                      {client.code && (
+                        <span className="mr-2 px-2 py-0.5 rounded bg-indigo-100 text-xs text-indigo-700 font-mono border border-indigo-300 shadow-sm">{client.code}</span>
+                      )}
+                      {client.name}
+                    </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="text-base text-gray-900">{client.phone}</div>

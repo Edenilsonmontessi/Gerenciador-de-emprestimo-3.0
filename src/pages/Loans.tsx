@@ -42,31 +42,37 @@ export default function Loans() {
     // Lógica para status visual: vencido se houver parcela vencida não paga
     let isOverdue = false;
     if (loan.status !== 'completed') {
-      // Para parcelado/diário
       if ((loan.paymentType === 'installments' || loan.paymentType === 'diario') && (loan.installments || loan.numberOfInstallments)) {
         const totalParcelas = loan.installments || loan.numberOfInstallments || 0;
+        const dataBase = loan.startDate ? dayjs(loan.startDate) : dayjs(loan.createdAt);
         for (let i = 1; i <= totalParcelas; i++) {
-          const dataBase = loan.startDate ? dayjs(loan.startDate) : dayjs(loan.createdAt);
           let dataVenc = loan.paymentType === 'diario'
             ? dataBase.add(i, 'day')
             : dataBase.add(i, 'month');
-          const recibosPagos = loanReceipts.length;
-          const pago = recibosPagos >= i;
-          if (!pago && dataVenc.isBefore(dayjs(), 'day')) {
-            isOverdue = true;
-            break;
+          // Só considera vencida se a data de vencimento já passou
+          if (dataVenc.isBefore(dayjs(), 'day')) {
+            // Verifica se existe recibo para esta data
+            const pago = loanReceipts.some(r => r.date && dayjs(r.date).isSame(dataVenc, loan.paymentType === 'diario' ? 'day' : 'month'));
+            if (!pago) {
+              // Log para depuração: mostra qual data está vencida
+              console.log(`Empréstimo ID: ${loan.id} - Parcela vencida em: ${dataVenc.format('DD/MM/YYYY')}`);
+              isOverdue = true;
+              break;
+            }
           }
         }
       } else if (loan.paymentType === 'interest_only') {
         // Para juros, vencido se não houver recibo para o mês vencido
         const dataBase = loan.startDate ? dayjs(loan.startDate) : dayjs(loan.createdAt);
-        const meses = loanReceipts.length + 1;
-        for (let i = 1; i <= meses; i++) {
+        const meses = loan.installments || loan.numberOfInstallments || 0;
+        for (let i = 0; i < meses; i++) {
           let dataVenc = dataBase.add(i, 'month');
-          const reciboMes = loanReceipts.find(r => r.date && dayjs(r.date).isSame(dataVenc, 'month'));
-          if (!reciboMes && dataVenc.isBefore(dayjs(), 'day')) {
-            isOverdue = true;
-            break;
+          if (dataVenc.isBefore(dayjs(), 'day')) {
+            const reciboMes = loanReceipts.find(r => r.date && dayjs(r.date).isSame(dataVenc, 'month'));
+            if (!reciboMes) {
+              isOverdue = true;
+              break;
+            }
           }
         }
       }
@@ -87,23 +93,17 @@ export default function Loans() {
     return status !== 'completed';
   }).length;
 
-  // Filter loans by search term and status (usando getLoanStatus para garantir consistência com tela de detalhes)
+  // Exibe apenas empréstimos NÃO concluídos nesta tela
   const filteredLoans = loansWithPayments.filter(loan => {
     const clientName = getClientName(loan.clientId).toLowerCase();
     const matchesSearch = clientName.includes(searchTerm.toLowerCase());
-    // Filtra pagamentos e recibos do empréstimo atual, igual à tela de detalhes
     const pagamentosDoEmprestimo = payments.filter(p => p.loanId === loan.id);
     const recibosDoEmprestimo = receipts ? receipts.filter((r) => r.loanId === loan.id) : [];
     const status = getLoanStatus(loan, recibosDoEmprestimo, pagamentosDoEmprestimo);
-    if (filterStatus === 'all') {
+    // Só mostra empréstimos que não estão concluídos
+    if (status === 'completed') return false;
+    if (filterStatus === 'all' || filterStatus === 'active') {
       return matchesSearch;
-    }
-    if (filterStatus === 'active') {
-      // Mostra todos que NÃO são concluídos (ativos + vencidos)
-      return matchesSearch && status !== 'completed';
-    }
-    if (filterStatus === 'completed') {
-      return matchesSearch && status === 'completed';
     }
     if (filterStatus === 'defaulted' || filterStatus === 'inadimplente' || filterStatus === 'inadimplentes' || filterStatus === 'overdue') {
       return matchesSearch && status === 'overdue';

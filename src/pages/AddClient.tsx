@@ -44,6 +44,7 @@ export default function AddClient() {
         state: data.state || '',
         notes: data.notes || '',
       };
+      console.log('[AddClient] Payload enviado para addClient:', clientToSave);
       const newClient = await addClient(clientToSave);
       if (newClient) {
         navigate(`/clients/${newClient.id}`);

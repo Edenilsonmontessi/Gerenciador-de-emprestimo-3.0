@@ -18,6 +18,7 @@ import RequireAuth from './components/RequireAuth';
 import Login from './pages/Login';
 import AdminUsers from './pages/AdminUsers';
 import OverdueLoans from './pages/OverdueLoans';
+import CompletedLoans from './pages/CompletedLoansByDueDate';
 
 function App() {
   const { isLoaded } = useSupabase();
@@ -51,6 +52,7 @@ function App() {
         <Route path="overdue-loans" element={<OverdueLoans />} />
         <Route path="loans/add" element={<AddLoan />} />
         <Route path="loans/:id" element={<LoanDetail />} />
+        <Route path="completed-loans" element={<CompletedLoans />} />
         <Route path="receipts" element={<Receipts />} />
         <Route path="receipts/:id" element={<ReceiptDetail />} />
         <Route path="reports" element={<Reports />} />

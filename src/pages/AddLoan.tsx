@@ -169,6 +169,7 @@ export default function AddLoan() {
                     {clients.map((client) => (
                       <option key={client.id} value={client.id}>
                         {client.name}
+                        {client.code ? ` (Cód: ${client.code})` : ''}
                       </option>
                     ))}
                   </select>

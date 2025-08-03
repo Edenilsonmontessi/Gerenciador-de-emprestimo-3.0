@@ -204,7 +204,8 @@ export default function LoanCalendar() {
   // Função para buscar nome do cliente pelo clientId
   const getClientName = (clientId: string) => {
     const client = clients.find(c => c.id === clientId);
-    return client ? client.name : clientId;
+    if (!client) return clientId;
+    return client.code ? `${client.name} (Cód: ${client.code})` : client.name;
   };
 
   // (Removido: já declarado acima)
@@ -278,9 +279,15 @@ export default function LoanCalendar() {
                     const dataVencStr = dataVenc.format('YYYY-MM-DD');
                     reciboPago = (receipts || []).some(r => r.loanId === loan.id && r.date && dayjs(r.date).format('YYYY-MM-DD') === dataVencStr);
                   } else if (loan.paymentType === 'interest_only' && parcelaNumero) {
-                    // Considera quitado se o número de recibos for igual ou maior ao número da parcela/juros
-                    const recibosPagos = (receipts || []).filter(r => r.loanId === loan.id);
-                    reciboPago = recibosPagos.length >= parcelaNumero;
+                    // Se houver pagamento 'full', todas as datas ficam quitadas
+                    const pagamentosDoEmprestimo = loan.payments || [];
+                    const quitadoFull = pagamentosDoEmprestimo.some(p => p.type === 'full');
+                    if (quitadoFull) {
+                      reciboPago = true;
+                    } else {
+                      const recibosPagos = (receipts || []).filter(r => r.loanId === loan.id);
+                      reciboPago = recibosPagos.length >= parcelaNumero;
+                    }
                   }
                   quitado = reciboPago;
                   const hoje = dayjs().startOf('day');

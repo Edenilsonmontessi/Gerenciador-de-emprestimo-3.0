@@ -1,5 +1,6 @@
 export interface Client {
   id: string;
+  code?: string; // Código único do cliente (5 dígitos, zeros à esquerda)
   name: string;
   email: string;
   phone: string;
@@ -54,6 +55,7 @@ export interface Receipt {
   dueDate: string | null;
   receiptNumber: string;
   createdAt: string;
+  extraQuitacao?: boolean;
 }
 
 export interface ReportFilter {

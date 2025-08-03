@@ -67,8 +67,33 @@ export function LocalDataProvider({ children }: { children: ReactNode }) {
   }
 
   // Adds
+  function generateRandomCode(existingCodes: number[]): number {
+    let code;
+    do {
+      code = Math.floor(100000 + Math.random() * 900000); // 6 dígitos
+    } while (existingCodes.includes(code));
+    return code;
+  }
+
   async function addClient(client: Omit<Client, 'id' | 'createdAt'>): Promise<Client | null> {
-    const { data, error } = await supabase.from('clients').insert([mapClientToDb(client)]).select().single();
+    // Gera código sequencial de 5 dígitos se não informado
+    let code = client.code;
+    if (!code) {
+      // Busca o maior código já cadastrado (considerando string com zeros à esquerda)
+      const codes = clients
+        .map(c => typeof c.code === 'string' ? c.code : c.code?.toString())
+        .filter((c): c is string => !!c)
+        .map(c => parseInt(c, 10))
+        .filter(n => !isNaN(n));
+      const nextCode = codes.length > 0 ? Math.max(...codes) + 1 : 1;
+      code = nextCode.toString().padStart(5, '0');
+    }
+    const clientWithCode = { ...client, code: code?.toString() };
+    const { data, error } = await supabase.from('clients').insert([mapClientToDb(clientWithCode)]).select().single();
+    if (error) {
+      alert('Erro ao cadastrar cliente: ' + (error.message || JSON.stringify(error)));
+      console.error('Erro detalhado do Supabase (addClient):', error, clientWithCode);
+    }
     if (!error && data) {
       const mapped = mapClientFromDb(data);
       setClients(prev => [mapped, ...prev]);
@@ -426,6 +451,7 @@ export function useSupabase() {
 function mapClientFromDb(db: any): Client {
   return {
     id: db.id,
+    code: db.code,
     name: db.name,
     email: db.email,
     phone: db.phone,
@@ -433,13 +459,13 @@ function mapClientFromDb(db: any): Client {
     address: db.address,
     city: db.city,
     state: db.state,
-    zipCode: db.zip_code,
     notes: db.notes ?? undefined,
     createdAt: db.created_at,
   };
 }
 function mapClientToDb(client: Omit<Client, 'id' | 'createdAt'>) {
   return {
+    code: client.code,
     name: client.name,
     email: client.email || '',
     phone: client.phone,

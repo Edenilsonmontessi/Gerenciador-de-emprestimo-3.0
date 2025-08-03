@@ -39,13 +39,12 @@ function getVencimentos(
   } else if (loan.paymentType === 'interest_only') {
     dataBase = loan.dueDate ? new Date(loan.dueDate + 'T12:00:00') : null;
     if (!dataBase) return [];
-    // Se houver pagamento full, não gera mais vencimentos futuros
     const pagamentosDoEmprestimo = loan.payments || [];
-    const quitado = pagamentosDoEmprestimo.some(p => p.type === 'full');
+    const quitadoFull = pagamentosDoEmprestimo.some(p => p.type === 'full');
     const qtd = receipts.filter(r => r.loanId === loan.id).length;
     let limite = qtd + 1;
-    if (quitado) {
-      // Se quitado, só gera vencimentos até o último recibo (não gera o próximo)
+    if (quitadoFull) {
+      // Se quitado, todas as datas anteriores ao pagamento ficam verdes e não gera datas futuras
       limite = qtd;
     }
     for (let i = 0; i < limite; i++) {
@@ -115,14 +114,6 @@ function getVencimentos(
 
         // Centraliza a lógica de status usando getLoanStatus com todos os pagamentos do sistema
         const pagamentosDoEmprestimo = payments.filter(p => p.loanId === foundLoan.id);
-        // LOG extra para debug
-        if (typeof window !== 'undefined' && window.console) {
-          window.console.log('[DEBUG LoanDetail] Chamando getLoanStatus', {
-            foundLoan,
-            receipts,
-            pagamentosDoEmprestimo
-          });
-        }
         const newStatus = getLoanStatus(foundLoan, receipts, pagamentosDoEmprestimo);
         if (newStatus !== foundLoan.status) {
           updateLoan(foundLoan.id, { status: newStatus });
@@ -348,120 +339,265 @@ function getVencimentos(
     if (loan.paymentType === 'interest_only' && paymentType === 'full') {
       statusForcado = 'completed';
     }
-    // Não exige vencimento nem gera nova data para pagamento full na modalidade somente juros
+
+    // QUITAÇÃO: gerar recibos para todos os dias/parcelas em aberto nas modalidades 'diario' e 'parcelado'
+    if (isQuitacao && (loan.paymentType === 'diario' || loan.paymentType === 'installments')) {
+      // Busca todas as datas de vencimento em aberto
+      const vencimentos = getVencimentos(loan, receipts.filter(r => r.loanId === loan.id));
+      const datasPagas = receipts.filter(r => r.loanId === loan.id && r.dueDate).map(r => r.dueDate ? r.dueDate.slice(0,10) : '');
+      let pagamentosGerados = [];
+      let recibosGerados = [];
+      // Gera recibos para cada parcela/dia em aberto
+      for (let i = 0; i < vencimentos.length; i++) {
+        const dataObj = vencimentos[i] instanceof Date ? vencimentos[i] : new Date(vencimentos[i]);
+        const dataStr = dataObj.toISOString().slice(0,10);
+        if (datasPagas.includes(dataStr)) continue; // já pago
+        // Gera pagamento e recibo para cada parcela em aberto
+        const pagamento = await addPayment({
+          loanId: loan.id,
+          amount: loan.installmentAmount || (loan.totalAmount / (loan.installments || 1)),
+          date: paymentDateISO,
+          type: 'full',
+          installmentNumber: i + 1,
+        });
+        if (pagamento) {
+          pagamentosGerados.push(pagamento);
+          const recibo = await addReceipt({
+            loanId: loan.id,
+            clientId: loan.clientId,
+            paymentId: pagamento.id,
+            amount: pagamento.amount,
+            date: pagamento.date,
+            dueDate: dataStr,
+            receiptNumber: `REC-${Date.now().toString().slice(-4)}${loan.id.slice(-4)}`,
+          });
+          if (recibo) recibosGerados.push(recibo);
+        }
+      }
+
+      // Gera um recibo extra para o valor registrado no campo do modal de quitação
+      // Este recibo NÃO será somado no total pago nem nos relatórios, apenas para envio ao cliente
+      if (paymentAmount && !isNaN(Number(paymentAmount)) && Number(paymentAmount) > 0) {
+        const totalParcelas = vencimentos.length;
+        // Não adiciona pagamentoExtra em pagamentosGerados
+        const pagamentoExtra = await addPayment({
+          loanId: loan.id,
+          amount: Number(paymentAmount),
+          date: paymentDateISO,
+          type: 'full',
+          installmentNumber: totalParcelas,
+        });
+        if (pagamentoExtra) {
+          // Recibo extra só para envio ao cliente, não entra nos cálculos
+          const reciboExtra = await addReceipt({
+            loanId: loan.id,
+            clientId: loan.clientId,
+            paymentId: pagamentoExtra.id,
+            amount: pagamentoExtra.amount,
+            date: pagamentoExtra.date,
+            dueDate: null,
+            receiptNumber: `REC-QUIT-${Date.now().toString().slice(-4)}${loan.id.slice(-4)}`,
+            // Adiciona campos extras para identificar como quitação e última parcela
+            parcelaAtual: totalParcelas,
+            totalParcelas: totalParcelas,
+            extraQuitacao: true,
+          });
+          // Não adiciona reciboExtra em recibosGerados nem em updatedReceipts
+          // Pode ser acessado apenas para envio ao cliente
+        }
+      }
+
+      const updatedPayments = [...(loan.payments || []), ...pagamentosGerados];
+      const updatedReceipts = [...receipts, ...recibosGerados];
+      let newStatus: 'completed' = 'completed';
+      let totalPagoFinal = loan.installments && loan.installmentAmount ? loan.installments * loan.installmentAmount : loan.totalAmount;
+      setQuitacaoForcada(true);
+      setTotalPagoForcado(totalPagoFinal);
+      setSaldoForcado(0);
+      await updateLoan(loan.id, { status: newStatus, payments: updatedPayments });
+      setLoan({
+        ...loan,
+        payments: updatedPayments,
+        status: newStatus
+      });
+      setPaymentAmount('');
+      setIsQuitacao(false);
+      if (refetchLoans) refetchLoans();
+      return;
+    }
+
+    // ...fluxo normal...
     let dueDateStr: string | null = selectedDueDate;
+    // Modalidade somente juros: se for pagamento full, não gera nova data de vencimento, marca como concluído e parcela verdinha
     if (loan.paymentType === 'interest_only' && paymentType === 'full') {
       dueDateStr = null;
+      // Marca como concluído e não gera nova data
+      const paymentToSave = {
+        loanId: loan.id,
+        amount,
+        date: paymentDateISO,
+        type: paymentType,
+        installmentNumber: selectedInstallment || 1,
+      };
+      const savedPayment = await addPayment(paymentToSave);
+      if (!savedPayment) {
+        alert('Erro ao registrar pagamento!');
+        return;
+      }
+      const receiptToSave = {
+        loanId: loan.id,
+        clientId: loan.clientId,
+        paymentId: savedPayment.id,
+        amount: savedPayment.amount,
+        date: savedPayment.date,
+        dueDate: null,
+        receiptNumber: `REC-${Date.now().toString().slice(-4)}${loan.id.slice(-4)}`,
+      };
+      const savedReceipt = await addReceipt(receiptToSave);
+      if (!savedReceipt) {
+        alert('Erro ao registrar recibo!');
+        return;
+      }
+      const updatedPayments = [...(loan.payments || []), savedPayment];
+      // Não adiciona nova data de vencimento, força visual para quitado
+      setQuitacaoForcada(true);
+      setTotalPagoForcado(loan.totalAmount);
+      setSaldoForcado(0);
+      await updateLoan(loan.id, { status: 'completed', payments: updatedPayments });
+      if (refetchLoans) {
+        await refetchLoans();
+        // Após refetchLoans, buscar o empréstimo atualizado na lista global
+        const updatedLoan = loans.find(l => l.id === loan.id);
+        if (updatedLoan) {
+          setLoan({ ...updatedLoan, payments: updatedLoan.payments, status: updatedLoan.status });
+          // Força quitação visual e saldo zerado
+          setQuitacaoForcada(true);
+          setTotalPagoForcado(updatedLoan.totalAmount);
+          setSaldoForcado(0);
+        }
+        // Se não encontrar, mantém o estado local atualizado
+        else {
+          setLoan({ ...loan, payments: updatedPayments, status: 'completed' });
+        }
+      }
+      setPaymentAmount('');
+      setIsQuitacao(false);
+      return;
     } else {
       if (!dueDateStr) {
         alert('Selecione o vencimento que está sendo pago!');
         return;
       }
+      const paymentToSave = {
+        loanId: loan.id,
+        amount,
+        date: paymentDateISO,
+        type: paymentType,
+        installmentNumber: selectedInstallment || 1,
+      };
+      const savedPayment = await addPayment(paymentToSave);
+      if (!savedPayment) {
+        alert('Erro ao registrar pagamento!');
+        return;
+      }
+      const receiptToSave = {
+        loanId: loan.id,
+        clientId: loan.clientId,
+        paymentId: savedPayment.id,
+        amount: savedPayment.amount,
+        date: savedPayment.date,
+        dueDate: dueDateStr ?? null,
+        receiptNumber: `REC-${Date.now().toString().slice(-4)}${loan.id.slice(-4)}`,
+      };
+      const savedReceipt = await addReceipt(receiptToSave);
+      if (!savedReceipt) {
+        alert('Erro ao registrar recibo!');
+        return;
+      }
+      const updatedPayments = [...(loan.payments || []), savedPayment];
+      const updatedReceipts = [...receipts, savedReceipt];
+      const totalRecebido = [
+        ...updatedReceipts.filter((r) => r.loanId === loan.id).map((r) => r.amount || 0),
+        ...updatedPayments.filter((p) => p.loanId === loan.id).map((p) => p.amount || 0)
+      ].reduce((sum, value) => sum + value, 0);
+      let newStatus = getLoanStatus(loan, updatedReceipts, updatedPayments);
+      let totalPagoFinal = totalRecebido;
+      if (isQuitacao) {
+        newStatus = 'completed';
+        totalPagoFinal = loan.paymentType === 'diario' || loan.paymentType === 'installments'
+          ? (loan.installments && loan.installmentAmount ? loan.installments * loan.installmentAmount : loan.totalAmount)
+          : loan.totalAmount;
+        setQuitacaoForcada(true);
+        setTotalPagoForcado(totalPagoFinal);
+        setSaldoForcado(0);
+      } else if (statusForcado !== undefined) {
+        newStatus = statusForcado;
+        setQuitacaoForcada(false);
+        setTotalPagoForcado(null);
+        setSaldoForcado(null);
+      } else {
+        setQuitacaoForcada(false);
+        setTotalPagoForcado(null);
+        setSaldoForcado(null);
+      }
+      await updateLoan(loan.id, { status: newStatus });
+      setLoan({
+        ...loan,
+        payments: updatedPayments,
+        status: newStatus
+      });
+      setPaymentAmount('');
+      setIsQuitacao(false);
+      if (refetchLoans) refetchLoans();
     }
-    const paymentToSave = {
-      loanId: loan.id,
-      amount,
-      date: paymentDateISO,
-      type: paymentType,
-      installmentNumber: selectedInstallment || 1,
-    };
-    const savedPayment = await addPayment(paymentToSave);
-    if (!savedPayment) {
-      alert('Erro ao registrar pagamento!');
-      return;
-    }
-    const receiptToSave = {
-      loanId: loan.id,
-      clientId: loan.clientId,
-      paymentId: savedPayment.id,
-      amount: savedPayment.amount,
-      date: savedPayment.date,
-      dueDate: dueDateStr ?? null,
-      receiptNumber: `REC-${Date.now().toString().slice(-4)}${loan.id.slice(-4)}`,
-    };
-    const savedReceipt = await addReceipt(receiptToSave);
-    if (!savedReceipt) {
-      alert('Erro ao registrar recibo!');
-      return;
-    }
-    const updatedPayments = [...(loan.payments || []), savedPayment];
-    const updatedReceipts = [...receipts, savedReceipt];
-    const totalRecebido = [
-      ...updatedReceipts.filter((r) => r.loanId === loan.id).map((r) => r.amount || 0),
-      ...updatedPayments.filter((p) => p.loanId === loan.id).map((p) => p.amount || 0)
-    ].reduce((sum, value) => sum + value, 0);
-    let newStatus = getLoanStatus(loan, updatedReceipts, updatedPayments);
-    let totalPagoFinal = totalRecebido;
-    if (isQuitacao) {
-      newStatus = 'completed';
-      totalPagoFinal = loan.paymentType === 'diario' || loan.paymentType === 'installments'
-        ? (loan.installments && loan.installmentAmount ? loan.installments * loan.installmentAmount : loan.totalAmount)
-        : loan.totalAmount;
-      setQuitacaoForcada(true);
-      setTotalPagoForcado(totalPagoFinal);
-      setSaldoForcado(0);
-    } else if (statusForcado !== undefined) {
-      newStatus = statusForcado;
-      setQuitacaoForcada(false);
-      setTotalPagoForcado(null);
-      setSaldoForcado(null);
-    } else {
-      setQuitacaoForcada(false);
-      setTotalPagoForcado(null);
-      setSaldoForcado(null);
-    }
-    await updateLoan(loan.id, { status: newStatus });
-    setLoan({
-      ...loan,
-      payments: updatedPayments,
-      status: newStatus
-    });
-    setPaymentAmount('');
-    setIsQuitacao(false);
-    if (refetchLoans) refetchLoans();
   };
 
   if (!loan || !client) {
     return <div className="p-4 text-center">Carregando...</div>;
   }
   // Resumo visual das parcelas
-  // Ajuste: se houver pagamento full na modalidade somente juros, todas as parcelas são consideradas pagas
   let resumoParcelas = getInstallmentsSummary(loan, receipts.filter(r => r.loanId === loan.id));
   let datasPagas: string[] = resumoParcelas.datasPagas || [];
   let datasVencidasNaoPagas: string[] = resumoParcelas.datasVencidas || [];
-  if (loan.paymentType === 'interest_only') {
-    const pagamentosDoEmprestimo = loan.payments || [];
-    const quitado = pagamentosDoEmprestimo.some(p => p.type === 'full');
-    if (quitado) {
-      // Marca todas as datas como pagas e limpa vencidas
-      const vencimentos = getVencimentos(loan, receipts.filter(r => r.loanId === loan.id));
-      datasPagas = vencimentos.map(data => {
-        let dataObj = data instanceof Date ? data : new Date(data);
-        return dataObj.toISOString().slice(0,10);
-      });
-      datasVencidasNaoPagas = [];
-      resumoParcelas = { ...resumoParcelas, pagas: datasPagas.length, vencidas: 0, emDia: 0 };
-    }
+  // Se houver pagamento full na modalidade somente juros, todas as datas são consideradas pagas
+  const quitadoSomenteJuros = loan.paymentType === 'interest_only' && (loan.payments || []).some(p => p.type === 'full');
+  if (quitadoSomenteJuros) {
+    // Todas as datas de vencimento anteriores ao pagamento full são consideradas pagas
+    const vencimentos = getVencimentos(loan, receipts.filter(r => r.loanId === loan.id));
+    datasPagas = vencimentos.map(data => {
+      let dataObj = data instanceof Date ? data : new Date(data);
+      return dataObj.toISOString().slice(0,10);
+    });
+    datasVencidasNaoPagas = [];
+    resumoParcelas = { ...resumoParcelas, pagas: datasPagas.length, vencidas: 0, emDia: 0 };
+  } else if (loan.paymentType === 'diario' && quitacaoForcada) {
+    const vencimentos = getVencimentos(loan, receipts.filter(r => r.loanId === loan.id));
+    datasPagas = vencimentos.map(data => {
+      let dataObj = data instanceof Date ? data : new Date(data);
+      return dataObj.toISOString().slice(0,10);
+    });
+    datasVencidasNaoPagas = [];
+    resumoParcelas = { ...resumoParcelas, pagas: datasPagas.length, vencidas: 0, emDia: 0 };
   }
   // Cálculo correto do total pago, saldo a receber e parcelas pagas
-  const recibosDoEmprestimo = receipts.filter(r => loan && r.loanId === loan.id);
+  const recibosDoEmprestimo = receipts.filter(r => loan && r.loanId === loan.id && !r.extraQuitacao);
   const pagamentosDoEmprestimo = loan.payments || [];
-  // Se foi quitação, força total pago igual ao total com juros
   const totalPagoConfirmado = quitacaoForcada && totalPagoForcado !== null
     ? totalPagoForcado
     : recibosDoEmprestimo.reduce((sum, r) => sum + (r.amount || 0), 0) + pagamentosDoEmprestimo.reduce((sum, p) => sum + (p.amount || 0), 0);
   const parcelasPagas = recibosDoEmprestimo.length;
 
-  // Ajuste: saldo a receber por modalidade (considerando recibos + pagamentos)
+  // Saldo a receber: se quitado na modalidade somente juros, sempre zero
   let saldoAReceber = 0;
   const totalComJuros = ((loan.paymentType === 'diario' || loan.paymentType === 'installments') && loan.installments && loan.installmentAmount)
     ? loan.installments * loan.installmentAmount
     : loan.totalAmount;
   if (quitacaoForcada && saldoForcado !== null) {
     saldoAReceber = saldoForcado;
+  } else if (quitadoSomenteJuros) {
+    saldoAReceber = 0;
   } else if (loan.paymentType === 'interest_only') {
-    // Saldo a receber = total do empréstimo - tudo que já foi pago (juros e quitação)
-    saldoAReceber = Math.max(totalComJuros - totalPagoConfirmado, 0);
+    saldoAReceber = loan.totalAmount;
   } else {
     saldoAReceber = Math.max(totalComJuros - totalPagoConfirmado, 0);
   }
@@ -483,7 +619,8 @@ function getVencimentos(
           )}
         </span>
         {/* Só mostra badge azul se não estiver quitado por full */}
-        {!(loan.paymentType === 'interest_only' && (loan.payments || []).some(p => p.type === 'full')) && (
+        {/* Só mostra badge azul se não estiver quitado por full */}
+        {!quitadoSomenteJuros && (
           <span className="px-2 py-1 rounded bg-blue-100 text-blue-800 text-xs font-bold">
             Em aberto: {resumoParcelas.emDia}
           </span>
@@ -516,6 +653,19 @@ function getVencimentos(
           >
             <svg xmlns='http://www.w3.org/2000/svg' className='h-5 w-5' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M12 4v16m8-8H4' /></svg>
             Registrar Pagamento
+          </button>
+          <button
+            onClick={() => {
+              setShowPaymentModal(true);
+              setIsQuitacao(true);
+              setPaymentAmount(''); // campo vazio para obrigar digitação
+              setSelectedInstallment(2); // Força tipo 'full'
+            }}
+            className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-green-600 text-white font-bold shadow hover:bg-green-700 transition disabled:opacity-60 disabled:cursor-not-allowed"
+            disabled={saldoAReceber === 0 || loan.status === 'completed'}
+          >
+            <svg xmlns='http://www.w3.org/2000/svg' className='h-5 w-5' fill='none' viewBox='0 0 24 24' stroke='currentColor'><path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M5 13l4 4L19 7' /></svg>
+            Quitar Empréstimo
           </button>
           {loan.status === 'defaulted' && (
             <button
@@ -563,14 +713,17 @@ function getVencimentos(
         <div className="flex flex-wrap gap-2">
           {(() => {
             const datas = getVencimentos(loan, receipts);
-            // Considera pago apenas se houver recibo para a data OU se a data for a selecionada no modal de pagamento e o modal está aberto
+            const quitadoSomenteJuros = loan.paymentType === 'interest_only' && (loan.payments || []).some(p => p.type === 'full');
             return datas.map((data, idx) => {
               let dataObj = data instanceof Date ? data : (typeof data === 'string' && (data as string).length === 10 ? new Date(data + 'T12:00:00') : new Date(data));
               let cor = 'bg-blue-100 text-blue-800';
               const dataStr = dataObj.toISOString().slice(0,10);
-              // Se já existe recibo para a data OU se o usuário acabou de selecionar para pagar
-              const pago = receipts.some(r => r.loanId === loan.id && r.dueDate && r.dueDate.slice(0,10) === dataStr) || (showPaymentModal && selectedDueDate === dataStr);
-              if (pago) {
+              let pago = receipts.some(r => r.loanId === loan.id && r.dueDate && r.dueDate.slice(0,10) === dataStr) || (showPaymentModal && selectedDueDate === dataStr);
+              // Se quitado por pagamento full, todas as datas ficam verdes
+              if (quitadoSomenteJuros) {
+                cor = 'bg-green-100 text-green-800';
+                pago = true;
+              } else if (pago) {
                 cor = 'bg-green-100 text-green-800';
               } else if (new Date().toISOString().slice(0,10) > dataStr) {
                 cor = 'bg-red-100 text-red-800';
@@ -824,26 +977,28 @@ function getVencimentos(
               <h3 className="text-2xl font-bold text-gray-900">Registrar Pagamento</h3>
             </div>
             <div className="space-y-5">
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">Selecione o vencimento</label>
-                <select
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition"
-                  value={selectedDueDate}
-                  onChange={e => setSelectedDueDate(e.target.value)}
-                >
-                  <option value="">Selecione...</option>
-                  {(() => {
-                    const vencimentos = getVencimentos(loan, receipts);
-                    const datasPagas = receipts.filter(r => r.loanId === loan.id && r.dueDate).map(r => r.dueDate ? r.dueDate.slice(0,10) : '');
-                    return vencimentos.map((data) => {
-                      let dataObj = data instanceof Date ? data : (typeof data === 'string' && (data as string).length === 10 ? new Date(data + 'T12:00:00') : new Date(data));
-                      const dataStr = dataObj.toISOString().slice(0,10);
-                      if (datasPagas.includes(dataStr)) return null;
-                      return <option key={dataStr} value={dataStr}>{dataObj.toLocaleDateString('pt-BR')}</option>;
-                    });
-                  })()}
-                </select>
-              </div>
+              {!isQuitacao && (
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">Selecione o vencimento</label>
+                  <select
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition"
+                    value={selectedDueDate}
+                    onChange={e => setSelectedDueDate(e.target.value)}
+                  >
+                    <option value="">Selecione...</option>
+                    {(() => {
+                      const vencimentos = getVencimentos(loan, receipts);
+                      const datasPagas = receipts.filter(r => r.loanId === loan.id && r.dueDate).map(r => r.dueDate ? r.dueDate.slice(0,10) : '');
+                      return vencimentos.map((data) => {
+                        let dataObj = data instanceof Date ? data : (typeof data === 'string' && (data as string).length === 10 ? new Date(data + 'T12:00:00') : new Date(data));
+                        const dataStr = dataObj.toISOString().slice(0,10);
+                        if (datasPagas.includes(dataStr)) return null;
+                        return <option key={dataStr} value={dataStr}>{dataObj.toLocaleDateString('pt-BR')}</option>;
+                      });
+                    })()}
+                  </select>
+                </div>
+              )}
               {loan.paymentType === 'interest_only' && (
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-1">Tipo de Pagamento</label>
@@ -939,7 +1094,6 @@ function getVencimentos(
                     ) {
                       // Remove o pagamento do tipo full relacionado ao recibo
                       updatedPayments = updatedPayments.filter(p => p.id !== reciboExcluido.paymentId);
-                      // Atualiza pagamentos no banco
                       await updateLoan(loan.id, { payments: updatedPayments });
                     }
                     await deleteReceipt(showDeleteReceiptModal);
@@ -947,9 +1101,15 @@ function getVencimentos(
                     if (loan) {
                       // Atualiza lista de recibos local (sem o excluído)
                       const updatedReceipts = receipts.filter(r => r.id !== showDeleteReceiptModal && r.loanId === loan.id);
-                      const novoStatus = getLoanStatus(loan, updatedReceipts, updatedPayments);
-                      await updateLoan(loan.id, { status: novoStatus, payments: updatedPayments });
-                      setLoan({ ...loan, status: novoStatus, payments: updatedPayments });
+                      // Se não houver mais recibos nem pagamento full, volta status para ativo
+                      const pagamentosFull = updatedPayments.filter(p => p.type === 'full');
+                      if (loan.paymentType === 'interest_only' && updatedReceipts.length === 0 && pagamentosFull.length === 0) {
+                        await updateLoan(loan.id, { status: 'active', payments: updatedPayments });
+                        setLoan({ ...loan, status: 'active', payments: updatedPayments });
+                        setQuitacaoForcada(false);
+                        setTotalPagoForcado(null);
+                        setSaldoForcado(null);
+                      }
                     }
                   }
                   setShowDeleteReceiptModal(null);

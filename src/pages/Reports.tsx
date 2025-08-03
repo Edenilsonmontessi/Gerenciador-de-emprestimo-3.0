@@ -344,7 +344,14 @@ export default function Reports() {
                   return (
                     <tr key={loan.id} className={idx % 2 === 0 ? 'bg-white' : 'bg-indigo-50'}>
                       {!filter.clientId && (
-                        <td className="px-4 py-2 text-sm text-gray-900">{client?.name || '-'}</td>
+                        <td className="px-4 py-2 text-sm text-gray-900">
+                          {client?.code && (
+                            <span className="inline-block bg-indigo-100 text-indigo-700 text-xs font-bold rounded px-2 py-1 mr-2 align-middle">
+                              {client.code}
+                            </span>
+                          )}
+                          {client?.name || '-'}
+                        </td>
                       )}
                       <td className="px-4 py-2 text-sm text-gray-700">{new Date(loan.createdAt).toLocaleDateString('pt-BR')}</td>
                       <td className="px-4 py-2 text-sm text-indigo-700 font-bold">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(loan.amount)}</td>

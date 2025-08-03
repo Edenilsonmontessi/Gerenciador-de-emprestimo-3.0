@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { useLocalData } from '../contexts/SupabaseContext';
 import { useMemo, useEffect } from 'react';
 import { getLoanStatus } from '../utils/loanStatus';
+// ...existing code...
 
 export default function Dashboard() {
   const { clients, loans, receipts, refetchLoans, fixAllLoanStatuses } = useLocalData();
@@ -15,20 +16,18 @@ export default function Dashboard() {
   // Unifica cálculo igual ao Reports: soma recibos confirmados
   const stats = useMemo(() => {
     // Sempre calcula o status atualizado de cada empréstimo
-    let activeLoans = 0;
+    let activeOrOverdueLoans = 0;
     let overdueLoans = 0;
     let completedLoans = 0;
     loans.forEach(loan => {
       const status = getLoanStatus(loan, receipts, loan.payments || []);
-      // Log para depuração
       if (typeof window !== 'undefined' && window.console) {
-        window.console.log('[DEBUG Dashboard] Empréstimo:', loan.id, 'Status:', status);
+        // ...existing code...
       }
-      if (status === 'active') activeLoans++;
-      else if (status === 'overdue') overdueLoans++;
-      else if (status === 'completed') completedLoans++;
+      if (status === 'active' || status === 'overdue') activeOrOverdueLoans++;
+      if (status === 'overdue') overdueLoans++;
+      if (status === 'completed') completedLoans++;
     });
-    const openLoans = activeLoans + overdueLoans;
     const totalLoaned = loans.reduce((sum, loan) => sum + (loan.amount || 0), 0);
 
     // Total Recebido: soma todos os recibos e todos os pagamentos
@@ -60,10 +59,10 @@ export default function Dashboard() {
 
     return {
       clientCount: clients.length,
-      openLoans,
+      openLoans: activeOrOverdueLoans,
       completedLoans,
       overdueLoans,
-      activeLoans,
+      activeLoans: activeOrOverdueLoans,
       totalLoaned,
       totalReceived,
       pendingAmount,
@@ -108,6 +107,8 @@ export default function Dashboard() {
           color="info"
         />
       </div>
+
+      {/* Lista de empréstimos removida conforme solicitado */}
 
       {/* Financial Summary */}
       <div className="mb-8">

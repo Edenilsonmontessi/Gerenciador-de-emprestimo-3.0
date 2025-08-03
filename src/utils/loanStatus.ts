@@ -111,9 +111,7 @@ export function getLoanStatus(
     const recibosPagos = (receipts || []).filter(r => r.loanId === loan.id && r.amount > 0);
     // Se o número de recibos pagos for igual ao número de parcelas, considera concluído
     if (recibosPagos.length >= totalParcelas && totalParcelas > 0) {
-      if (typeof window !== 'undefined' && window.console) {
-        window.console.log('[DEBUG loanStatus] Todas as parcelas pagas! Empréstimo concluído (tolerante a datas).', { loanId: loan.id });
-      }
+      
       return 'completed';
     }
     // Lógica antiga (datas exatas) como fallback para mostrar overdue
@@ -167,33 +165,13 @@ export function getLoanStatus(
         if (dataObj < hoje) {
           vencidaSemPagamento = true;
         }
-        if (typeof window !== 'undefined' && window.console) {
-          window.console.log('[DEBUG loanStatus] Parcela NÃO paga:', {
-            dataEsperada: dataObj,
-            datasVenc,
-            recibosPagos,
-            loanId: loan.id,
-            installmentAmount: loan.installmentAmount,
-            customDates
-          });
-        }
+
       } else {
-        if (typeof window !== 'undefined' && window.console) {
-          window.console.log('[DEBUG loanStatus] Parcela paga:', {
-            dataEsperada: dataObj,
-            datasVenc,
-            recibosPagos,
-            loanId: loan.id,
-            installmentAmount: loan.installmentAmount,
-            customDates
-          });
-        }
+
       }
     }
     if (todasPagas) {
-      if (typeof window !== 'undefined' && window.console) {
-        window.console.log('[DEBUG loanStatus] Todas as parcelas pagas! Empréstimo concluído.', { loanId: loan.id });
-      }
+
       return 'completed';
     }
     if (vencidaSemPagamento) return 'overdue';

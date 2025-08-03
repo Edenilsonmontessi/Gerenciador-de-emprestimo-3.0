@@ -8,7 +8,7 @@ import { getLoanStatus } from '../utils/loanStatus';
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { clients, loans, receipts, deleteReceipt, updateClient, deleteClientCascade } = useLocalData();
+  const { clients, loans, receipts, deleteReceipt, updateClient, deleteClientCascade, deleteLoanCascade } = useLocalData();
   
   const [client, setClient] = useState<Client | null>(null);
   const [clientLoans, setClientLoans] = useState<Loan[]>([]);
@@ -89,7 +89,10 @@ export default function ClientDetail() {
           >
             <ArrowLeft size={24} className="mr-2" />
           </button>
-          <h1 className="section-title drop-shadow-lg">{client.name}</h1>
+          <h1 className="section-title drop-shadow-lg">
+            <span className="mr-2 px-2 py-0.5 rounded bg-indigo-100 text-xs text-indigo-700 font-mono border border-indigo-300 shadow-sm">{client.code}</span>
+            {client.name}
+          </h1>
         </div>
         <div className="flex gap-2">
           <Link 
@@ -118,7 +121,10 @@ export default function ClientDetail() {
             <div className="space-y-4">
               <div>
                 <label className="text-sm text-gray-500">Nome Completo</label>
-                <p className="text-gray-900">{client.name}</p>
+                <p className="text-gray-900">
+            <span className="mr-2 px-2 py-0.5 rounded bg-indigo-100 text-xs text-indigo-700 font-mono border border-indigo-300 shadow-sm">{client.code}</span>
+            {client.name}
+                </p>
               </div>
               
               <div>
@@ -235,8 +241,19 @@ export default function ClientDetail() {
                           <td className="px-6 py-4 whitespace-nowrap text-base text-gray-900 font-semibold">
                             {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(saldoAReceber)}
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          <td className="px-6 py-4 whitespace-nowrap text-sm space-x-2">
                             <Link to={`/loans/${loan.id}`} className="btn btn-xs btn-primary shadow hover:scale-105 transition-transform">Detalhes</Link>
+                            <button
+                              onClick={async () => {
+                                if (!window.confirm('Tem certeza que deseja excluir este empréstimo? Esta ação não pode ser desfeita.')) return;
+                                await deleteLoanCascade(loan.id);
+                                alert('Empréstimo excluído com sucesso!');
+                                window.location.reload();
+                              }}
+                              className="btn btn-xs btn-danger shadow hover:scale-105 transition-transform"
+                            >
+                              Excluir
+                            </button>
                           </td>
                         </tr>
                       );
